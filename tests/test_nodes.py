@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import pathlib
+import re
 import sys
 import types
 import tempfile
@@ -40,6 +42,26 @@ class StoryDirectorTests(unittest.TestCase):
     def test_validation_rejects_incomplete_script(self):
         with self.assertRaises(ValueError):
             NODES.validate_script("[SHOT_START]\n===H3_PROMPT===\npartial", 1)
+        valid = NODES.compile_fallback("门打开。", {"segment_count": "1"})
+        with self.assertRaises(ValueError):
+            NODES.validate_script(valid.replace("overall_soundscape:", "soundscape:"), 1)
+
+    def test_material_intros_keep_media_groups(self):
+        assets = NODES.normalize_assets([
+            {"path": "story_director/hero.png", "type": "image", "role": "角色", "name": "女主", "description": "红衣"},
+            {"path": "story_director/move.mp4", "type": "video", "name": "追逐运镜"},
+            {"path": "story_director/voice.wav", "type": "audio", "name": "女主音色"},
+        ])
+        image, video, audio = NODES._material_intros(assets)
+        self.assertIn("角色A = 女主", image)
+        self.assertIn("视频A = 追逐运镜", video)
+        self.assertIn("音频A = 女主音色", audio)
+
+    def test_enhancer_replaces_only_detail(self):
+        block = NODES.compile_fallback("门打开。", {"segment_count": "1"})
+        changed = NODES._replace_detailed_description(block, "新的镜头描述")
+        self.assertIn("detailed_description: 新的镜头描述", changed)
+        self.assertIn("overall_soundscape: 环境声与动作声", changed)
 
     def test_last_processed_script_is_recoverable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -50,6 +72,22 @@ class StoryDirectorTests(unittest.TestCase):
 
     def test_only_one_node_is_registered(self):
         self.assertEqual(list(NODES.NODE_CLASS_MAPPINGS), ["StoryDirector"])
+        self.assertTrue(NODES.StoryDirector.OUTPUT_NODE)
+
+    def test_offline_node_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = pathlib.Path(directory) / "last.json"
+            with mock.patch.object(NODES, "_last_processed_file", return_value=str(target)):
+                script, catalog = NODES.StoryDirector().direct(
+                    story="门打开。侦探走入。", prompt_override="", mode="离线预览",
+                    story_style="悬疑推理", segment_count="4段", segment_duration=5,
+                    prompt_lang="中文 [ZH]", preference="推镜", custom_rules="", enhance=False,
+                    llm_model="未选择本地 GGUF", context_size=32768, gpu_layers=-1,
+                    max_tokens=8192, temperature=0.6, top_k=40, top_p=0.9,
+                    min_p=0.05, repeat_penalty=1.05, seed=0,
+                    director_state='{"assets": []}')
+        self.assertEqual(len(re.findall(r"\[SHOT_START\]", script)), 4)
+        self.assertEqual(json.loads(catalog), {"images": [], "videos": [], "audios": []})
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from pathlib import PurePosixPath
 
 from .llama_backend import LLAMA
 from .presets.script import STORY_STYLES, SEGMENT_COUNT_OPTIONS, build_shot_prompt, _resolve_segment_count
+from .sheding.prompt_enhancer_rules import build_enhancer_prompt
 
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"})
 VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".webm", ".mkv", ".avi"})
@@ -143,18 +144,43 @@ def _state(value) -> dict:
     return parsed
 
 
-def _material_intro(assets):
-    lines = []
+def _material_intros(assets):
+    intros = {"image": [], "video": [], "audio": []}
     counters = {"image": 0, "video": 0, "audio": 0}
-    labels = {"image": "图片", "video": "视频", "audio": "音频"}
+    slot_types = {"image": {"角色", "场景", "道具", "分镜"}, "video": {"视频"}, "audio": {"音频"}}
     for asset in assets:
         if not asset.get("enabled", True):
             continue
         kind = asset["type"]
         counters[kind] += 1
-        slot = f"{labels[kind]}{counters[kind]}"
-        lines.append(f"{asset.get('role', '其他')}{slot[-1]} = {asset['name']}（{asset['description']}）")
-    return "\n".join(lines)
+        role = asset.get("role", "其他")
+        slot_type = role if role in slot_types[kind] else ("视频" if kind == "video" else "音频" if kind == "audio" else "其他")
+        slot = f"{slot_type}{chr(64 + counters[kind])}"
+        description = asset.get("description", "").strip()
+        intros[kind].append(f"{slot} = {asset['name']}{f'（{description}）' if description else ''}")
+    return tuple("\n".join(intros[kind]) for kind in ("image", "video", "audio"))
+
+
+def _replace_detailed_description(block, detail):
+    pattern = r"(?ms)(^detailed_description:\s*).*?(?=^overall_soundscape:)"
+    if not re.search(pattern, block):
+        raise ValueError("H3 分段缺少 detailed_description/overall_soundscape 字段")
+    return re.sub(pattern, lambda match: match.group(1) + detail.strip() + "\n", block, count=1)
+
+
+def enhance_script(script, config, story_style, segment_duration, prompt_lang, preference, custom_rules, seed):
+    blocks = re.findall(r"\[SHOT_START\].*?\[SHOT_END\]", script, re.DOTALL)
+    style_text = STORY_STYLES.get(story_style, story_style)
+    system = build_enhancer_prompt("zh" if "ZH" in prompt_lang else "en", style_text, segment_duration, preference, custom_rules)
+    output = []
+    for index, block in enumerate(blocks):
+        detail = re.search(r"(?ms)^detailed_description:\s*(.*?)(?=^overall_soundscape:)", block)
+        if not detail:
+            raise ValueError(f"第 {index + 1} 段缺少 detailed_description")
+        request = f"分段 {index + 1}/{len(blocks)}\n\n{block}\n\n原 detailed_description：\n{detail.group(1).strip()}"
+        polished = LLAMA.complete(config, system, request, seed=seed + index, max_tokens=4096, temperature=0.5)
+        output.append(_replace_detailed_description(block, polished))
+    return "\n\n".join(output)
 
 
 def compile_fallback(story: str, state: dict) -> str:
@@ -180,8 +206,14 @@ def validate_script(script: str, expected_count: int | None = None) -> str:
         raise ValueError("必须输出完整 H3 剧本块（[SHOT_START]...[SHOT_END]）")
     if expected_count is not None and len(shots) != int(expected_count):
         raise ValueError(f"分段数量应为 {expected_count}，实际为 {len(shots)}")
-    if any("===H3_PROMPT===" not in shot for shot in shots):
-        raise ValueError("每个分段都必须包含 ===H3_PROMPT===")
+    required_sections = ("===H3_PROMPT===", "===SCENE_INSTRUCTION===", "===VIDEO_INSTRUCTION===", "===AUDIO_INSTRUCTION===")
+    required_fields = ("subject_definitions:", "summary:", "retention_analysis:", "detailed_description:", "overall_soundscape:", "non_diegetic_music:")
+    for index, shot in enumerate(shots, 1):
+        if any(section not in shot for section in required_sections):
+            raise ValueError(f"第 {index} 段缺少 H3 或调度区块")
+        h3 = shot.split("===H3_PROMPT===", 1)[1].split("===SCENE_INSTRUCTION===", 1)[0]
+        if any(field not in h3 for field in required_fields):
+            raise ValueError(f"第 {index} 段缺少 H3 六段字段")
     return text
 
 
@@ -203,9 +235,17 @@ class StoryDirector:
             "segment_duration": ("INT", {"default": 8, "min": 4, "max": 15}),
             "prompt_lang": (["中文 [ZH]", "英文 [EN]"],),
             "preference": ("STRING", {"default": "", "multiline": True}),
+            "custom_rules": ("STRING", {"default": "", "multiline": True}),
+            "enhance": ("BOOLEAN", {"default": False}),
             "llm_model": (models,),
             "context_size": ("INT", {"default": 32768, "min": 1024, "max": 262144, "step": 128}),
             "gpu_layers": ("INT", {"default": -1, "min": -1, "max": 999}),
+            "max_tokens": ("INT", {"default": 8192, "min": 256, "max": 262144, "step": 256}),
+            "temperature": ("FLOAT", {"default": 0.6, "min": 0.0, "max": 2.0, "step": 0.01}),
+            "top_k": ("INT", {"default": 40, "min": 0, "max": 1000}),
+            "top_p": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 1.0, "step": 0.01}),
+            "min_p": ("FLOAT", {"default": 0.05, "min": 0.0, "max": 1.0, "step": 0.01}),
+            "repeat_penalty": ("FLOAT", {"default": 1.05, "min": 0.0, "max": 10.0, "step": 0.01}),
             "seed": ("INT", {"default": 0, "min": 0, "max": 9223372036854775807}),
         }, "hidden": {"director_state": ("STRING", {"default": '{"assets": []}', "multiline": True})}}
 
@@ -213,9 +253,11 @@ class StoryDirector:
     RETURN_NAMES = ("H3完整剧本", "素材目录 JSON")
     FUNCTION = "direct"
     CATEGORY = "StoryDirector"
+    OUTPUT_NODE = True
 
     def direct(self, story, prompt_override, mode, story_style, segment_count, segment_duration, prompt_lang,
-               preference, llm_model, context_size, gpu_layers, seed, director_state):
+               preference, custom_rules, enhance, llm_model, context_size, gpu_layers, max_tokens,
+               temperature, top_k, top_p, min_p, repeat_penalty, seed, director_state):
         state = _state(director_state)
         state.update({"segment_count": segment_count, "segment_duration": segment_duration, "preference": preference})
         count = _resolve_segment_count(segment_count)
@@ -230,13 +272,20 @@ class StoryDirector:
             return script, catalog
         if not llm_model or llm_model.startswith("未选择"):
             raise ValueError("拆解/生成模式必须选择 models/LLM 中的 GGUF")
+        image_intro, video_intro, audio_intro = _material_intros(state["assets"])
         system = build_shot_prompt(story, mode=mode, story_style=story_style, segment_count_label=segment_count,
                                    lang="zh" if "ZH" in prompt_lang else "en", segment_duration=segment_duration,
-                                   ref_image_intro=_material_intro(state["assets"]), preference=preference)
+                                   ref_image_intro=image_intro, ref_video_intro=video_intro, ref_audio_intro=audio_intro,
+                                   preference=preference, custom_rules=custom_rules)
         user = f"请严格输出恰好 {count} 个 [SHOT_START]...[SHOT_END] 完整 H3 分段，不要解释。"
-        result = LLAMA.complete({"model": llm_model, "n_ctx": context_size, "n_gpu_layers": gpu_layers},
-                                system, user, seed=seed, max_tokens=8192, temperature=0.6)
+        config = {"model": llm_model, "n_ctx": context_size, "n_gpu_layers": gpu_layers}
+        params = {"max_tokens": max_tokens, "temperature": temperature, "top_k": top_k, "top_p": top_p,
+                  "min_p": min_p, "repeat_penalty": repeat_penalty}
+        result = LLAMA.complete(config, system, user, seed=seed, **params)
         script = validate_script(result, count)
+        if enhance:
+            script = validate_script(enhance_script(script, config, story_style, segment_duration,
+                                                    prompt_lang, preference, custom_rules, seed), count)
         _save_last_processed_script(script, state)
         return script, catalog
 
