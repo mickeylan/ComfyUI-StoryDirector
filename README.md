@@ -1,23 +1,19 @@
-# 故事导演
+# StoryDirector 故事导演
 
-故事导演是一个完整的单节点中文分镜工作台。它只做前期规划：在节点内部保存故事、素材目录、镜头偏好与提示词覆盖，输出 H3 兼容的纯文本分镜和素材目录 JSON，不产生媒体数据。
+StoryDirector 是从成熟 H3 故事导演台中减法抽取的单节点前期工作台，不是生成器重设计。它保留故事模式、H3 拆解规则、风格与镜头偏好、丰富提示词编辑/@素材引用、素材卡片与本地预览、重拍/已处理镜头文本编辑和帮助面板；生成、编码、采样、解码与媒体总线均不在本扩展内。
 
 ## 使用
 
-1. 在 ComfyUI Python 环境安装 `llama-cpp-python`（仅在选择“本地 LLM”时需要）。
-2. 将 GGUF 模型放入 `models/LLM`。
-3. 添加唯一的“故事导演”节点，在五个中文标签页中填写故事、素材、镜头偏好、本地 LLM 设置和提示词覆盖。
-4. 浏览器导入的文件会分块复制到 `input/story_director`；图片使用图片预览，视频和音频使用浏览器原生控件。程序不解析媒体内容。
-5. 可将 `example_workflows/StoryDirector 简单测试.json` 拖入 ComfyUI。它默认使用“确定性编排”，无需 GGUF，即可检查 H3 提示词和素材目录两个输出；显示输出需要 `ComfyUI-Custom-Scripts` 的 `Show Text` 节点。
+1. 在 ComfyUI Python 环境安装 `llama-cpp-python`（仅选择本地模型时需要）。
+2. 将 GGUF 放入 `models/LLM`，添加唯一的 `StoryDirector` 节点。
+3. 节点面板中的故事、素材、镜头偏好、本地 LLM、H3 提示词标签页可直接编辑；浏览器导入的资产会安全复制到 `input/story_director`，工作流只保存托管相对路径。
+4. `离线预览` 用同一 H3 块格式检查版面；拆解/生成模式只调用进程内 llama-cpp-python，不访问网络。
 
-素材支持固定的图片、视频、音频扩展名；文件名会清洗，单文件上限 512 MiB，临时文件失败后清理，预览和删除都只接受托管目录内的路径。素材卡片可编辑名称、语义角色、描述、启用状态和顺序。
+## 输出契约
 
-## 两种模式
+唯一注册节点 `StoryDirector` 输出：
 
-“确定性编排”不需要模型，按段数、时长、风格、语言和镜头偏好生成稳定的兜底文本；“本地 LLM”只调用进程内的 `llama-cpp-python`，必须选择 GGUF。没有远程接口、模型下载、密钥或媒体处理流程。
+- `H3完整剧本`：完整的 `[SHOT_START] ... [SHOT_END]` 分段，保留 `===H3_PROMPT===`、`===SCENE_INSTRUCTION===`、`===VIDEO_INSTRUCTION===`、`===AUDIO_INSTRUCTION===` 及 H3 六段字段；不转换成简化的 Visual/Action schema。
+- `素材目录 JSON`：启用状态、类型、角色、描述、顺序及 `story_director/...` 托管路径。
 
-## 输出约定
-
-首个镜头以 `[Shot 1]` 开始且不带时间码；后续镜头严格以 `[Shot N] At MM:SS.mmm` 开始并保持时间递增。每个镜头都包含 `Visual:`、`Action:`、`Camera:`、`Lighting:`、`Audio:`。填写提示词覆盖后仍会执行相同校验；校验失败会明确拒绝输出。第二个输出是包含素材路径、类型、角色、描述和启用状态的 JSON 目录。
-
-本扩展只负责前期素材目录和提示词，不会替代 `ComfyUI-MiniMaxH3-Director`，也不会调用 `ComfyUI-MiniMax-H3-Sampler-Unlimited`。可先根据实际工作流使用效果，再决定后续集成方式。
+本扩展没有在线 API、密钥、llama-server、安装器、兼容节点或媒体生成流程。

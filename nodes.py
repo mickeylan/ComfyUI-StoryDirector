@@ -1,4 +1,9 @@
-"""本地故事分镜规划器：只输出文字提示词与资产目录。"""
+"""StoryDirector: extracted H3 story planning console.
+
+This node deliberately stops at the planning boundary.  It preserves the H3
+script contract (SHOT_START blocks, six-part H3 prompts and schedule sections)
+and returns the complete script plus a portable asset catalog.
+"""
 from __future__ import annotations
 
 import json
@@ -7,11 +12,41 @@ import re
 from pathlib import PurePosixPath
 
 from .llama_backend import LLAMA
+from .presets.script import STORY_STYLES, SEGMENT_COUNT_OPTIONS, build_shot_prompt, _resolve_segment_count
 
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"})
 VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".webm", ".mkv", ".avi"})
-AUDIO_EXTENSIONS = frozenset({".wav", ".mp3", ".flac", ".m4a", ".ogg"})
+AUDIO_EXTENSIONS = frozenset({".wav", ".mp3", ".flac", ".m4a", ".ogg", ".aac", ".wma", ".opus"})
 ASSET_ROLES = ("角色", "场景", "道具", "分镜", "音效", "音乐", "其他")
+
+
+def _last_processed_file():
+    try:
+        import folder_paths
+        root = folder_paths.get_output_directory()
+    except Exception:
+        root = os.path.join(os.path.dirname(__file__), "output")
+    root = os.path.join(root, "story_director")
+    os.makedirs(root, exist_ok=True)
+    return os.path.join(root, "last_processed.json")
+
+
+def _save_last_processed_script(script, state):
+    try:
+        with open(_last_processed_file(), "w", encoding="utf-8") as handle:
+            json.dump({"script": script, "catalog": mature_catalog(state.get("assets", []))},
+                      handle, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+def load_last_processed_script():
+    try:
+        with open(_last_processed_file(), "r", encoding="utf-8-sig") as handle:
+            data = json.load(handle)
+        return data if isinstance(data, dict) and isinstance(data.get("script"), str) else None
+    except (OSError, ValueError):
+        return None
 
 
 def normalize_filename(value: str) -> str:
@@ -31,39 +66,69 @@ def asset_type(filename: str) -> str:
 
 
 def _safe_relative(path: str) -> str:
-    value = str(path or "").replace("\\", "/").lstrip("/")
-    parts = PurePosixPath(value).parts
+    parts = PurePosixPath(str(path or "").replace("\\", "/").lstrip("/")).parts
     if not parts or parts[0] != "story_director" or ".." in parts or any(p in ("", ".") for p in parts):
         raise ValueError("素材路径必须位于 input/story_director")
     return "/".join(parts)
 
 
 def normalize_assets(value) -> list[dict]:
+    """Normalize the mature catalog shape and the node's legacy flat-list shape.
+
+    The original asset manager stores ``images``, ``videos`` and ``audios``;
+    older StoryDirector workflows stored one ``assets`` list.  Keep both on
+    input, but use one validated internal representation for prompt building.
+    """
     data = json.loads(value) if isinstance(value, str) and value.strip() else value
     if isinstance(data, dict):
-        data = data.get("assets", [])
+        if isinstance(data.get("assets"), list):
+            data = data["assets"]
+        else:
+            source = data
+            data = []
+            for kind, key in (("image", "images"), ("video", "videos"), ("audio", "audios")):
+                for item in (source.get(key) or []):
+                    if isinstance(item, dict):
+                        copied = dict(item)
+                        copied.setdefault("role", copied.get("type", "其他"))
+                        copied["type"] = kind
+                        data.append(copied)
     if not isinstance(data, list):
         return []
     result = []
-    for order, item in enumerate(data):
+    for item in data:
         if not isinstance(item, dict):
             continue
-        path = str(item.get("path", ""))
         try:
-            path = _safe_relative(path)
+            path = _safe_relative(item.get("path", ""))
             kind = str(item.get("type") or asset_type(path))
-        except (ValueError, TypeError):
+            if kind not in {"image", "video", "audio"}:
+                continue
+        except (TypeError, ValueError):
             continue
-        if kind not in {"image", "video", "audio"}:
-            continue
-        role = str(item.get("role", "其他"))
-        result.append({
-            "type": kind, "role": role if role in ASSET_ROLES else "其他",
-            "name": (str(item.get("name") or os.path.basename(path))[:180]),
-            "description": str(item.get("description", ""))[:2000],
-            "path": path, "enabled": bool(item.get("enabled", True)), "order": len(result),
-        })
+        entry = dict(item)
+        entry.update({"type": kind, "role": item.get("role") if item.get("role") in ASSET_ROLES else "其他",
+                      "name": str(item.get("name") or os.path.basename(path))[:180],
+                      "description": str(item.get("description", ""))[:2000], "path": path,
+                      "enabled": bool(item.get("enabled", True)), "order": len(result)})
+        result.append(entry)
     return result
+
+
+def mature_catalog(assets) -> dict:
+    """Return the source asset-manager schema without tensor/media payloads."""
+    catalog = {"images": [], "videos": [], "audios": []}
+    for item in normalize_assets(assets):
+        kind = item["type"]
+        key = {"image": "images", "video": "videos", "audio": "audios"}[kind]
+        clean = dict(item)
+        clean.pop("order", None)
+        # In the source manager ``type`` is the semantic dropdown for each
+        # bucket (the bucket itself carries image/video/audio kind).
+        clean["type"] = clean.get("role", "其他")
+        clean.setdefault("letter", "")
+        catalog[key].append(clean)
+    return catalog
 
 
 def _state(value) -> dict:
@@ -78,71 +143,46 @@ def _state(value) -> dict:
     return parsed
 
 
-def _stamp(seconds: float) -> str:
-    minutes, remainder = divmod(max(0.0, float(seconds)), 60)
-    return f"{int(minutes):02d}:{remainder:06.3f}"
-
-
-def _story_parts(story: str) -> list[str]:
-    return [p.strip() for p in re.split(r"\n+|(?<=[。.!！？?])\s*", str(story or "").strip()) if p.strip()]
-
-
-def compile_fallback(story: str, state: dict) -> str:
-    count = max(1, min(64, int(state.get("segment_count", state.get("shots", 4)))))
-    duration = max(0.001, float(state.get("segment_duration", state.get("shot_duration", 3.0))))
-    parts = _story_parts(story) or ["一个具有明确动作的电影感瞬间"]
-    parts = (parts + [parts[-1]] * count)[:count]
-    style = str(state.get("style", "电影感"))
-    language = str(state.get("language", "中文"))
-    camera = str(state.get("camera_preferences", "中景，平稳推进"))
+def _material_intro(assets):
     lines = []
-    for i, part in enumerate(parts, 1):
-        marker = "[Shot 1]" if i == 1 else f"[Shot {i}] At {_stamp((i - 1) * duration)}"
-        lines.append(f"{marker} | Visual: {part}（{style}） | Action: 连续且可见的物理动作 | Camera: {camera} | Lighting: {style}光线 | Audio: 环境声与动作声（{language}）")
+    counters = {"image": 0, "video": 0, "audio": 0}
+    labels = {"image": "图片", "video": "视频", "audio": "音频"}
+    for asset in assets:
+        if not asset.get("enabled", True):
+            continue
+        kind = asset["type"]
+        counters[kind] += 1
+        slot = f"{labels[kind]}{counters[kind]}"
+        lines.append(f"{asset.get('role', '其他')}{slot[-1]} = {asset['name']}（{asset['description']}）")
     return "\n".join(lines)
 
 
-def compose_llm_request(story: str, state: dict) -> tuple[str, str]:
-    """构造稳定的 H3 分镜请求；素材只以语义目录进入请求。"""
-    count = max(1, min(64, int(state.get("segment_count", state.get("shots", 4)))))
-    duration = max(0.001, float(state.get("segment_duration", state.get("shot_duration", 3.0))))
-    system = ("你是专业影视分镜规划师。将故事拆成准确的镜头节奏，保持角色、场景、道具在镜头间连续。"
-              "每个镜头必须写可观察的 Visual、连续的 Action、具体的 Camera、Lighting、Audio；"
-              "先写主体和动作，再写镜头运动、景别、光线与声音，避免抽象形容词、不可拍摄的意图和矛盾动作。"
-              "只引用素材目录中真实存在且适合当前镜头的素材名称，不得编造素材。"
-              f"严格输出恰好 {count} 个纯文本镜头，不要 Markdown、解释或代码围栏。"
-              "首段以 [Shot 1] 开始且不写时间；后续每段以 [Shot N] At MM:SS.mmm 开始，时间严格递增。")
-    catalog = [{"name": a["name"], "type": a["type"], "role": a["role"], "description": a["description"]}
-               for a in state.get("assets", []) if a.get("enabled", True)]
-    user = json.dumps({"故事": str(story or "").strip(), "镜头数": count, "单镜头秒数": duration,
-                       "风格": state.get("style", "电影感"), "语言": state.get("language", "中文"),
-                       "镜头偏好": state.get("camera_preferences", ""), "素材目录": catalog}, ensure_ascii=False, indent=2)
-    return system, user
+def compile_fallback(story: str, state: dict) -> str:
+    """Offline preview retaining the real H3 six-part/block contract."""
+    count = _resolve_segment_count(state.get("segment_count", 4))
+    parts = [p.strip() for p in re.split(r"\n+|(?<=[。.!！？?])\s*", story or "") if p.strip()]
+    parts = (parts or ["故事中的关键情节"]) + [parts[-1] if parts else "故事中的关键情节"] * count
+    preference = state.get("preference", "")
+    blocks = []
+    for index, part in enumerate(parts[:count], 1):
+        h3 = (f"subject_definitions: {part}\nsummary: {part}\nretention_analysis: 保持主体与空间连续\n"
+              f"detailed_description: {part}，动作连续可拍摄。\noverall_soundscape: 环境声与动作声\n"
+              f"non_diegetic_music: N/A\n{preference}").strip()
+        blocks.append(f"[SHOT_START]\n===H3_PROMPT===\n{h3}\n===SCENE_INSTRUCTION===\n{{\"slots\": []}}\n"
+                      f"===VIDEO_INSTRUCTION===\n{{\"slots\": []}}\n===AUDIO_INSTRUCTION===\n{{\"slots\": []}}\n[SHOT_END]")
+    return "\n\n".join(blocks)
 
 
-def validate_prompt(text: str, expected_count: int | None = None) -> str:
-    prompt = str(text or "").strip()
-    if not prompt or "```" in prompt or re.search(r"\[StoryDirector error\]", prompt, re.I):
-        raise ValueError("提示词为空或含有非法错误标记")
-    matches = list(re.finditer(r"^\[Shot (\d+)\](?: At ([0-9]{2,}):([0-5][0-9])\.([0-9]{3}))?(?:[ \t]*\||[ \t]+)", prompt, re.M))
-    numbers = [int(m.group(1)) for m in matches]
-    if numbers != list(range(1, len(matches) + 1)) or not matches:
-        raise ValueError("必须包含连续的 [Shot 1]、[Shot N] 标记")
-    if expected_count is not None and len(matches) != int(expected_count):
-        raise ValueError(f"镜头数量应为 {expected_count}，实际为 {len(matches)}")
-    if matches[0].group(2) is not None:
-        raise ValueError("Shot 1 不应包含时间码")
-    if any(match.group(2) is None for match in matches[1:]):
-        raise ValueError("Shot 2 及后续镜头必须包含时间码")
-    times = [int(m.group(2)) * 60 + int(m.group(3)) + int(m.group(4)) / 1000 for m in matches[1:]]
-    if any(b <= a for a, b in zip(times, times[1:])):
-        raise ValueError("后续镜头时间必须严格递增")
-    required = ("Visual:", "Action:", "Camera:", "Lighting:", "Audio:")
-    for i, match in enumerate(matches):
-        block = prompt[match.start():matches[i + 1].start() if i + 1 < len(matches) else len(prompt)]
-        if any(field not in block for field in required):
-            raise ValueError("每个镜头都必须包含 Visual、Action、Camera、Lighting、Audio")
-    return prompt
+def validate_script(script: str, expected_count: int | None = None) -> str:
+    text = str(script or "").strip()
+    shots = re.findall(r"\[SHOT_START\](.*?)\[SHOT_END\]", text, re.DOTALL)
+    if not text or not shots or "===H3_PROMPT===" not in text:
+        raise ValueError("必须输出完整 H3 剧本块（[SHOT_START]...[SHOT_END]）")
+    if expected_count is not None and len(shots) != int(expected_count):
+        raise ValueError(f"分段数量应为 {expected_count}，实际为 {len(shots)}")
+    if any("===H3_PROMPT===" not in shot for shot in shots):
+        raise ValueError("每个分段都必须包含 ===H3_PROMPT===")
+    return text
 
 
 class StoryDirector:
@@ -151,44 +191,55 @@ class StoryDirector:
         try:
             import folder_paths
             models = folder_paths.get_filename_list("LLM")
+            models = [name for name in models if name.lower().endswith(".gguf")] or ["未选择本地 GGUF"]
         except (ImportError, KeyError):
-            models = []
+            models = ["未选择本地 GGUF"]
         return {"required": {
             "story": ("STRING", {"default": "", "multiline": True}),
             "prompt_override": ("STRING", {"default": "", "multiline": True}),
-            "mode": (["确定性编排", "本地 LLM"],),
-            "llm_model": (models or ["未选择本地 GGUF"],),
-            "segment_count": ("INT", {"default": 4, "min": 1, "max": 64}),
-            "segment_duration": ("FLOAT", {"default": 3.0, "min": 0.001, "max": 3600.0, "step": 0.001}),
-            "style": ("STRING", {"default": "电影感"}),
-            "language": (["中文", "English", "中英双语"],),
-            "camera_preferences": ("STRING", {"default": "中景，平稳推进"}),
+            "mode": (["拆解模式 (Decompose)", "生成模式 (Generate)", "离线预览"],),
+            "story_style": (list(STORY_STYLES),),
+            "segment_count": (list(SEGMENT_COUNT_OPTIONS),),
+            "segment_duration": ("INT", {"default": 8, "min": 4, "max": 15}),
+            "prompt_lang": (["中文 [ZH]", "英文 [EN]"],),
+            "preference": ("STRING", {"default": "", "multiline": True}),
+            "llm_model": (models,),
             "context_size": ("INT", {"default": 32768, "min": 1024, "max": 262144, "step": 128}),
-            "gpu_layers": ("INT", {"default": -1, "min": -1, "max": 999, "step": 1}),
+            "gpu_layers": ("INT", {"default": -1, "min": -1, "max": 999}),
             "seed": ("INT", {"default": 0, "min": 0, "max": 9223372036854775807}),
         }, "hidden": {"director_state": ("STRING", {"default": '{"assets": []}', "multiline": True})}}
 
     RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("H3 分镜提示词", "素材目录 JSON")
+    RETURN_NAMES = ("H3完整剧本", "素材目录 JSON")
     FUNCTION = "direct"
-    CATEGORY = "故事导演"
+    CATEGORY = "StoryDirector"
 
-    def direct(self, story, prompt_override, mode, llm_model, segment_count, segment_duration, style, language, camera_preferences, context_size, gpu_layers, seed, director_state):
+    def direct(self, story, prompt_override, mode, story_style, segment_count, segment_duration, prompt_lang,
+               preference, llm_model, context_size, gpu_layers, seed, director_state):
         state = _state(director_state)
-        state.update({"segment_count": segment_count, "segment_duration": segment_duration, "style": style,
-                      "language": language, "camera_preferences": camera_preferences,
-                      "context_size": context_size, "gpu_layers": gpu_layers})
-        catalog = json.dumps({"assets": state["assets"]}, ensure_ascii=False, indent=2)
+        state.update({"segment_count": segment_count, "segment_duration": segment_duration, "preference": preference})
+        count = _resolve_segment_count(segment_count)
+        catalog = json.dumps(mature_catalog(state["assets"]), ensure_ascii=False, indent=2)
         if str(prompt_override or "").strip():
-            return (validate_prompt(prompt_override, segment_count), catalog)
-        if mode == "本地 LLM":
-            if not llm_model or llm_model.startswith("未选择"):
-                raise ValueError("本地 LLM 模式必须选择 GGUF 模型")
-            system, request = compose_llm_request(story, state)
-            prompt = LLAMA.complete({"model": llm_model, "n_ctx": context_size, "n_gpu_layers": gpu_layers}, system, request, seed=seed, max_tokens=8192, temperature=0.2)
-            return (validate_prompt(prompt, segment_count), catalog)
-        return (validate_prompt(compile_fallback(story, state), segment_count), catalog)
+            script = validate_script(prompt_override, count)
+            _save_last_processed_script(script, state)
+            return script, catalog
+        if mode == "离线预览":
+            script = validate_script(compile_fallback(story, state), count)
+            _save_last_processed_script(script, state)
+            return script, catalog
+        if not llm_model or llm_model.startswith("未选择"):
+            raise ValueError("拆解/生成模式必须选择 models/LLM 中的 GGUF")
+        system = build_shot_prompt(story, mode=mode, story_style=story_style, segment_count_label=segment_count,
+                                   lang="zh" if "ZH" in prompt_lang else "en", segment_duration=segment_duration,
+                                   ref_image_intro=_material_intro(state["assets"]), preference=preference)
+        user = f"请严格输出恰好 {count} 个 [SHOT_START]...[SHOT_END] 完整 H3 分段，不要解释。"
+        result = LLAMA.complete({"model": llm_model, "n_ctx": context_size, "n_gpu_layers": gpu_layers},
+                                system, user, seed=seed, max_tokens=8192, temperature=0.6)
+        script = validate_script(result, count)
+        _save_last_processed_script(script, state)
+        return script, catalog
 
 
 NODE_CLASS_MAPPINGS = {"StoryDirector": StoryDirector}
-NODE_DISPLAY_NAME_MAPPINGS = {"StoryDirector": "故事导演"}
+NODE_DISPLAY_NAME_MAPPINGS = {"StoryDirector": "StoryDirector 故事导演"}
