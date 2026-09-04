@@ -1,0 +1,11 @@
+[project]
+name = "comfyui-storydirector"
+version = "0.1.0"
+description = "Local-only ComfyUI nodes for story direction and segmented script text"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["llama-cpp-python"]
+license = { text = "GPL-3.0-or-later" }
+
+[tool.comfy]
+DisplayName = "ComfyUI-StoryDirector"
