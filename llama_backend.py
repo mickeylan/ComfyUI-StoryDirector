@@ -24,10 +24,19 @@ class LocalLlama:
         try:
             import folder_paths
             path = folder_paths.get_full_path("LLM", model)
+            mmproj_name = config.get("mmproj", "None")
+            mmproj_path = folder_paths.get_full_path("LLM", mmproj_name) if mmproj_name != "None" else None
         except (ImportError, KeyError):
             path = None
+            mmproj_path = None
         if not path or not os.path.isfile(path) or os.path.splitext(path)[1].lower() != ".gguf":
             raise ValueError("所选模型必须是 models/LLM 中列出的 GGUF 文件")
+        if not mmproj_path or not os.path.isfile(mmproj_path) or os.path.splitext(mmproj_path)[1].lower() != ".gguf":
+            raise ValueError("Qwen3.5 必须选择 models/LLM 中的 mmproj GGUF 文件")
+        try:
+            from llama_cpp.llama_chat_format import MTMDChatHandler
+        except ImportError as exc:
+            raise RuntimeError("Qwen3.5 需要带 MTMD 支持的 llama-cpp-python") from exc
         self.close()
         kwargs = {
             "model_path": path,
@@ -35,6 +44,7 @@ class LocalLlama:
             "n_gpu_layers": int(config.get("n_gpu_layers", -1)),
             "verbose": False,
         }
+        kwargs["chat_handler"] = MTMDChatHandler(clip_model_path=mmproj_path, verbose=False, use_gpu=False)
         self._llm = Llama(**kwargs)
         self._config = config
         return self._llm

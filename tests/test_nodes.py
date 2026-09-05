@@ -100,7 +100,7 @@ class StoryDirectorTests(unittest.TestCase):
                     story="门打开。侦探走入。", prompt_override="", mode="离线预览",
                     story_style="悬疑推理", segment_count="4段", segment_duration=5,
                     prompt_lang="中文 [ZH]", preference="推镜", custom_rules="", enhance=False,
-                    llm_model="未选择本地 GGUF", context_size=32768, gpu_layers=-1,
+                    llm_model="未选择 Qwen3.5 GGUF", llm_mmproj="未选择 Qwen3.5 mmproj", context_size=32768, gpu_layers=-1,
                     max_tokens=8192, temperature=0.6, top_k=40, top_p=0.9,
                     min_p=0.05, repeat_penalty=1.05, seed=0,
                     director_state='{"assets": []}')

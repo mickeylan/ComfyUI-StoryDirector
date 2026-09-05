@@ -227,10 +227,13 @@ class StoryDirector:
     def INPUT_TYPES(cls):
         try:
             import folder_paths
-            models = folder_paths.get_filename_list("LLM")
-            models = [name for name in models if name.lower().endswith(".gguf")] or ["未选择本地 GGUF"]
+            files = [name for name in folder_paths.get_filename_list("LLM") if name.lower().endswith(".gguf")]
+            qwen35 = [name for name in files if "qwen3.5" in name.lower() or "qwen35" in name.lower()]
+            models = [name for name in qwen35 if "mmproj" not in os.path.basename(name).lower()] or ["未选择 Qwen3.5 GGUF"]
+            mmproj_models = [name for name in qwen35 if "mmproj" in os.path.basename(name).lower()] or ["未选择 Qwen3.5 mmproj"]
         except (ImportError, KeyError):
-            models = ["未选择本地 GGUF"]
+            models = ["未选择 Qwen3.5 GGUF"]
+            mmproj_models = ["未选择 Qwen3.5 mmproj"]
         return {"required": {
             "story": ("STRING", {"default": "", "multiline": True}),
             "prompt_override": ("STRING", {"default": "", "multiline": True}),
@@ -243,6 +246,7 @@ class StoryDirector:
             "custom_rules": ("STRING", {"default": "", "multiline": True}),
             "enhance": ("BOOLEAN", {"default": False}),
             "llm_model": (models,),
+            "llm_mmproj": (mmproj_models,),
             "context_size": ("INT", {"default": 32768, "min": 1024, "max": 262144, "step": 128}),
             "gpu_layers": ("INT", {"default": -1, "min": -1, "max": 999}),
             "max_tokens": ("INT", {"default": 8192, "min": 256, "max": 262144, "step": 256}),
@@ -262,7 +266,7 @@ class StoryDirector:
     OUTPUT_NODE = True
 
     def direct(self, story, prompt_override, mode, story_style, segment_count, segment_duration, prompt_lang,
-               preference, custom_rules, enhance, llm_model, context_size, gpu_layers, max_tokens,
+               preference, custom_rules, enhance, llm_model, llm_mmproj, context_size, gpu_layers, max_tokens,
                temperature, top_k, top_p, min_p, repeat_penalty, seed, director_state):
         state = _state(director_state)
         state.update({"segment_count": segment_count, "segment_duration": segment_duration, "preference": preference})
@@ -277,14 +281,16 @@ class StoryDirector:
             _save_last_processed_script(script, state)
             return script, catalog
         if not llm_model or llm_model.startswith("未选择"):
-            raise ValueError("拆解/生成模式必须选择 models/LLM 中的 GGUF")
+            raise ValueError("拆解/生成模式必须选择 Qwen3.5 GGUF")
+        if not llm_mmproj or llm_mmproj.startswith("未选择"):
+            raise ValueError("拆解/生成模式必须选择 Qwen3.5 mmproj GGUF")
         image_intro, video_intro, audio_intro = _material_intros(state["assets"])
         system = build_shot_prompt(story, mode=mode, story_style=story_style, segment_count_label=segment_count,
                                    lang="zh" if "ZH" in prompt_lang else "en", segment_duration=segment_duration,
                                    ref_image_intro=image_intro, ref_video_intro=video_intro, ref_audio_intro=audio_intro,
                                    preference=preference, custom_rules=custom_rules)
         user = f"请严格输出恰好 {count} 个 [SHOT_START]...[SHOT_END] 完整 H3 分段，不要解释。"
-        config = {"model": llm_model, "n_ctx": context_size, "n_gpu_layers": gpu_layers}
+        config = {"model": llm_model, "mmproj": llm_mmproj, "n_ctx": context_size, "n_gpu_layers": gpu_layers}
         params = {"max_tokens": max_tokens, "temperature": temperature, "top_k": top_k, "top_p": top_p,
                   "min_p": min_p, "repeat_penalty": repeat_penalty}
         result = LLAMA.complete(config, system, user, seed=seed, **params)
