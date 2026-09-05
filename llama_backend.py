@@ -50,8 +50,8 @@ class LocalLlama:
         kwargs = {
             "model_path": path,
             "n_ctx": int(config.get("n_ctx", 65536)),
-            "n_batch": 256,
-            "n_ubatch": 256,
+            "n_batch": 64,
+            "n_ubatch": 64,
             "n_gpu_layers": int(config.get("n_gpu_layers", -1)),
             "flash_attn": True,
             "type_k": 8,

@@ -173,7 +173,7 @@ def _replace_detailed_description(block, detail):
     return re.sub(pattern, lambda match: match.group(1) + detail.strip() + "\n", block, count=1)
 
 
-def enhance_script(script, config, story_style, segment_duration, prompt_lang, preference, custom_rules, seed):
+def enhance_script(script, config, story_style, segment_duration, prompt_lang, preference, custom_rules, seed, image_paths=()):
     blocks = re.findall(r"\[SHOT_START\].*?\[SHOT_END\]", script, re.DOTALL)
     style_text = STORY_STYLES.get(story_style, story_style)
     system = build_enhancer_prompt("zh" if "ZH" in prompt_lang else "en", style_text, segment_duration, preference, custom_rules)
@@ -183,7 +183,7 @@ def enhance_script(script, config, story_style, segment_duration, prompt_lang, p
         if not detail:
             raise ValueError(f"第 {index + 1} 段缺少 detailed_description")
         request = f"分段 {index + 1}/{len(blocks)}\n\n{block}\n\n原 detailed_description：\n{detail.group(1).strip()}"
-        polished = LLAMA.complete(config, system, request, seed=seed + index, max_tokens=4096, temperature=0.5)
+        polished = LLAMA.complete(config, system, request, seed=seed + index, image_paths=image_paths, max_tokens=4096, temperature=0.5)
         output.append(_replace_detailed_description(block, polished))
     return "\n\n".join(output)
 
@@ -335,7 +335,7 @@ class StoryDirector:
         if enhance:
             print(f"[StoryDirector] 开始二次增强 {actual_count} 个分段", flush=True)
             script = validate_script(enhance_script(script, config, story_style, segment_duration,
-                                                    prompt_lang, preference, custom_rules, seed))
+                                                    prompt_lang, preference, custom_rules, seed, image_paths))
         _save_last_processed_script(script, state)
         return script, catalog
 
