@@ -1,118 +1,80 @@
-"""llama-cpp-python 本地模型适配器。"""
+"""Qwen3.5 local backend using a disposable llama-cpp-python worker."""
 
-import base64
-import io
+import json
 import os
+import subprocess
+import sys
 import threading
 import time
 
-from PIL import Image
+RESULT_PREFIX = "STORYDIRECTOR_RESULT="
 
 
 class LocalLlama:
-    """延迟加载的 llama-cpp-python 封装。"""
-
-    def __init__(self):
-        self._llm = None
-        self._config = None
-
-    def load(self, config):
-        config = dict(config or {})
-        model = config.get("model", "")
-        if not model:
-            raise ValueError("请在 models/LLM 中选择 GGUF 模型")
-        if self._llm is not None and self._config == config:
-            return self._llm
-        try:
-            from llama_cpp import Llama
-        except ImportError as exc:
-            raise RuntimeError("故事导演需要 llama-cpp-python") from exc
+    def _paths(self, config):
         try:
             import folder_paths
-            path = folder_paths.get_full_path("LLM", model)
-            mmproj_name = config.get("mmproj", "None")
-            mmproj_path = folder_paths.get_full_path("LLM", mmproj_name) if mmproj_name != "None" else None
+            model_path = folder_paths.get_full_path("LLM", config.get("model", ""))
+            mmproj_path = folder_paths.get_full_path("LLM", config.get("mmproj", ""))
         except (ImportError, KeyError):
-            path = None
+            model_path = None
             mmproj_path = None
-        if not path or not os.path.isfile(path) or os.path.splitext(path)[1].lower() != ".gguf":
-            raise ValueError("所选模型必须是 models/LLM 中列出的 GGUF 文件")
+        if not model_path or not os.path.isfile(model_path) or os.path.splitext(model_path)[1].lower() != ".gguf":
+            raise ValueError("所选模型必须是 models/LLM 中列出的 Qwen3.5 GGUF 文件")
         if not mmproj_path or not os.path.isfile(mmproj_path) or os.path.splitext(mmproj_path)[1].lower() != ".gguf":
-            raise ValueError("Qwen3.5 必须选择 models/LLM 中的 mmproj GGUF 文件")
-        try:
-            from llama_cpp.llama_chat_format import MTMDChatHandler
-        except ImportError as exc:
-            raise RuntimeError("Qwen3.5 需要带 MTMD 支持的 llama-cpp-python") from exc
-        self.close()
-        print(f"[StoryDirector] 正在加载 Qwen3.5：{os.path.basename(path)}", flush=True)
-        print(f"[StoryDirector] 正在加载 mmproj：{os.path.basename(mmproj_path)}", flush=True)
-        started = time.perf_counter()
-        kwargs = {
-            "model_path": path,
-            "n_ctx": int(config.get("n_ctx", 65536)),
-            "n_batch": 64,
-            "n_ubatch": 64,
-            "n_gpu_layers": int(config.get("n_gpu_layers", -1)),
-            "flash_attn": True,
-            "type_k": 8,
-            "type_v": 8,
-            "swa_full": False,
-            "verbose": False,
-        }
-        kwargs["chat_handler"] = MTMDChatHandler(clip_model_path=mmproj_path, verbose=False, use_gpu=True)
-        self._llm = Llama(**kwargs)
-        self._config = config
-        print(f"[StoryDirector] 模型加载完成，耗时 {time.perf_counter() - started:.1f} 秒", flush=True)
-        return self._llm
+            raise ValueError("Qwen3.5 必须选择 models/LLM 中配套的 mmproj GGUF 文件")
+        return model_path, mmproj_path
 
     def complete(self, config, system, user, seed=0, image_paths=(), **params):
-        llm = self.load(config)
+        model_path, mmproj_path = self._paths(config)
         allowed = {"max_tokens", "temperature", "top_k", "top_p", "min_p", "repeat_penalty"}
-        options = {k: v for k, v in params.items() if k in allowed and v is not None}
-        print(f"[StoryDirector] 开始生成：输入 {len(system) + len(user)} 字符，最大输出 {options.get('max_tokens', '默认')} tokens", flush=True)
+        options = {key: value for key, value in params.items() if key in allowed and value is not None}
+        request = {
+            "model_path": model_path,
+            "mmproj_path": mmproj_path,
+            "n_ctx": int(config.get("n_ctx", 65536)),
+            "system": system,
+            "user": user,
+            "seed": int(seed),
+            "image_paths": list(image_paths),
+            "params": options,
+        }
+        print(f"[StoryDirector] 启动独立 Qwen3.5 进程：{os.path.basename(model_path)}", flush=True)
+        print(f"[StoryDirector] 提交 {len(image_paths)} 张参考图，最大输出 {options.get('max_tokens', '默认')} tokens", flush=True)
+        worker = os.path.join(os.path.dirname(__file__), "qwen35_worker.py")
+        process = subprocess.Popen(
+            [sys.executable, worker], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace",
+        )
         started = time.perf_counter()
-        content = []
-        print(f"[StoryDirector] 正在读取 {len(image_paths)} 张参考图", flush=True)
-        for path in image_paths:
-            with Image.open(path) as image:
-                image = image.convert("RGB")
-                image.thumbnail((1920, 1080), Image.Resampling.LANCZOS)
-                encoded_image = io.BytesIO()
-                image.save(encoded_image, format="JPEG", quality=88)
-                encoded = base64.b64encode(encoded_image.getvalue()).decode("ascii")
-                print(f"[StoryDirector] 参考图已适配：{os.path.basename(path)} -> {image.width}x{image.height}", flush=True)
-            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}})
-        content.append({"type": "text", "text": user})
-        print(f"[StoryDirector] 已向 Qwen3.5 提交 {len(image_paths)} 张参考图", flush=True)
         done = threading.Event()
-        def log_progress():
+
+        def heartbeat():
             while not done.wait(15):
                 print(f"[StoryDirector] Qwen3.5 仍在生成，已耗时 {time.perf_counter() - started:.1f} 秒", flush=True)
-        reporter = threading.Thread(target=log_progress, daemon=True)
+
+        reporter = threading.Thread(target=heartbeat, daemon=True)
         reporter.start()
         try:
-            response = llm.create_chat_completion(
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
-                seed=int(seed), reasoning_budget=0, **options,
-            )
+            stdout, stderr = process.communicate(json.dumps(request, ensure_ascii=False))
         finally:
             done.set()
             reporter.join()
-        message = response["choices"][0]["message"]
-        text = str(message.get("content") or message.get("reasoning_content") or "")
-        elapsed = time.perf_counter() - started
-        print(f"[StoryDirector] 生成完成：{len(text)} 字符，总耗时 {elapsed:.1f} 秒", flush=True)
+        if stderr.strip():
+            print(stderr.rstrip(), flush=True)
+        if process.returncode != 0:
+            raise RuntimeError(f"Qwen3.5 独立进程失败（退出码 {process.returncode}）：{stderr.strip()[-2000:]}")
+        result_line = next((line for line in reversed(stdout.splitlines()) if line.startswith(RESULT_PREFIX)), None)
+        if result_line is None:
+            raise RuntimeError("Qwen3.5 独立进程没有返回结果")
+        text = str(json.loads(result_line[len(RESULT_PREFIX):]).get("text") or "")
+        print(f"[StoryDirector] 生成完成：{len(text)} 字符，总耗时 {time.perf_counter() - started:.1f} 秒", flush=True)
         if not text.strip():
             raise RuntimeError("Qwen3.5 没有返回任何文本，请检查模型与 mmproj 是否匹配")
         return text
 
     def close(self):
-        if self._llm is not None:
-            close = getattr(self._llm, "close", None)
-            if close:
-                close()
-        self._llm = None
-        self._config = None
+        pass
 
 
 LLAMA = LocalLlama()
