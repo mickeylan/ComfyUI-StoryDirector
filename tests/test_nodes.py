@@ -79,6 +79,12 @@ class StoryDirectorTests(unittest.TestCase):
                 NODES._save_last_processed_script("script", {"assets": []})
                 self.assertEqual(NODES.load_last_processed_script()["script"], "script")
 
+    def test_full_story_style_catalog_is_exposed(self):
+        expected = {"热血战斗", "悬疑推理", "温馨日常", "奇幻冒险", "科幻未来", "古风武侠", "都市情感", "恐怖惊悚", "末日废土", "黑色电影", "校园青春", "历史权谋", "修仙问道", "逆袭打脸", "歌神舞台", "穿越重生", "霸总甜宠", "乡村喜剧", "谍战风云"}
+        styles = NODES.StoryDirector.INPUT_TYPES()["required"]["story_style"][0]
+        self.assertEqual(set(styles), expected)
+        self.assertEqual(len(styles), 19)
+
     def test_only_one_node_is_registered(self):
         self.assertEqual(list(NODES.NODE_CLASS_MAPPINGS), ["StoryDirector"])
         self.assertTrue(NODES.StoryDirector.OUTPUT_NODE)

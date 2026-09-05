@@ -12,8 +12,9 @@ import re
 from pathlib import PurePosixPath
 
 from .llama_backend import LLAMA
-from .presets.script import STORY_STYLES, SEGMENT_COUNT_OPTIONS, build_shot_prompt, _resolve_segment_count
+from .presets.script import SEGMENT_COUNT_OPTIONS, build_shot_prompt, _resolve_segment_count
 from .sheding.prompt_enhancer_rules import build_enhancer_prompt
+from .sheding.story_styles import STORY_STYLES
 
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"})
 VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".webm", ".mkv", ".avi"})
@@ -110,8 +111,9 @@ def normalize_assets(value) -> list[dict]:
             continue
         entry = dict(item)
         default_role = "角色" if kind == "image" else "主体" if kind == "video" else "音色"
+        reference_name = str(item.get("reference_name") or item.get("name") or os.path.splitext(os.path.basename(path))[0])[:180].strip()
         entry.update({"type": kind, "role": item.get("role") if item.get("role") in ASSET_ROLES else default_role,
-                      "name": str(item.get("name") or os.path.splitext(os.path.basename(path))[0])[:180].strip(),
+                      "reference_name": reference_name, "name": reference_name,
                       "description": str(item.get("description", ""))[:2000], "path": path,
                       "enabled": bool(item.get("enabled", True)), "order": len(result)})
         result.append(entry)
@@ -159,7 +161,8 @@ def _material_intros(assets):
         slot_type = role if role in slot_types[kind] else ("视频" if kind == "video" else "音频" if kind == "audio" else "其他")
         slot = f"{slot_type}{chr(64 + counters[kind])}"
         description = asset.get("description", "").strip()
-        intros[kind].append(f"{slot} = {asset['name']}{f'（{description}）' if description else ''}")
+        name = asset.get("reference_name") or asset["name"]
+        intros[kind].append(f"{slot} = {name}{f'（{description}）' if description else ''}")
     return tuple("\n".join(intros[kind]) for kind in ("image", "video", "audio"))
 
 
