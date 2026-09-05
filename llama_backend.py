@@ -44,7 +44,6 @@ class LocalLlama:
         worker = os.path.join(os.path.dirname(__file__), "qwen35_worker.py")
         process = subprocess.Popen(
             [sys.executable, worker], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace",
         )
         started = time.perf_counter()
         done = threading.Event()
@@ -56,7 +55,9 @@ class LocalLlama:
         reporter = threading.Thread(target=heartbeat, daemon=True)
         reporter.start()
         try:
-            stdout, stderr = process.communicate(json.dumps(request, ensure_ascii=False))
+            stdout_bytes, stderr_bytes = process.communicate(json.dumps(request, ensure_ascii=True).encode("ascii"))
+            stdout = stdout_bytes.decode("utf-8", errors="replace")
+            stderr = stderr_bytes.decode("utf-8", errors="replace")
         finally:
             done.set()
             reporter.join()
