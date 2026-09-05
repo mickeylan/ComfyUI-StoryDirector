@@ -76,7 +76,7 @@ class LocalLlama:
         for path in image_paths:
             with Image.open(path) as image:
                 image = image.convert("RGB")
-                image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+                image.thumbnail((1920, 1080), Image.Resampling.LANCZOS)
                 encoded_image = io.BytesIO()
                 image.save(encoded_image, format="JPEG", quality=88)
                 encoded = base64.b64encode(encoded_image.getvalue()).decode("ascii")
