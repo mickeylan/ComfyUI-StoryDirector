@@ -52,6 +52,12 @@ class StoryDirectorTests(unittest.TestCase):
         self.assertIn('===VIDEO_INSTRUCTION===\n{"slots": []}', normalized)
         self.assertIn('===AUDIO_INSTRUCTION===\n{"slots": []}', normalized)
 
+    def test_all_missing_section_markers_are_normalized(self):
+        script = NODES.compile_fallback("门打开。", {"segment_count": "1"})
+        body = script.split("===H3_PROMPT===\n", 1)[1].split("===SCENE_INSTRUCTION===", 1)[0].strip()
+        normalized = NODES.normalize_schedule_sections(f"[SHOT_START]\n{body}\n[SHOT_END]")
+        self.assertEqual(NODES.validate_script(normalized, 1), normalized)
+
     def test_markdown_and_missing_h3_markers_are_normalized(self):
         script = NODES.compile_fallback("门打开。", {"segment_count": "1"})
         markdown = script.replace("===H3_PROMPT===", "### H3_PROMPT").replace("===SCENE_INSTRUCTION===", "**SCENE_INSTRUCTION**")

@@ -211,11 +211,8 @@ def normalize_schedule_sections(script: str) -> str:
         marker_names = ("H3_PROMPT", "SCENE_INSTRUCTION", "VIDEO_INSTRUCTION", "AUDIO_INSTRUCTION")
         for name in marker_names:
             shot = re.sub(rf"(?im)^\s*(?:#+\s*)?=*[\s`*_]*{name}[\s`*_]*=*\s*$", f"==={name}===", shot)
-        required_fields = ("subject_definitions:", "summary:", "retention_analysis:", "detailed_description:", "overall_soundscape:", "non_diegetic_music:")
-        if "===H3_PROMPT===" not in shot and all(field in shot for field in required_fields):
-            shot = f"===H3_PROMPT===\n{shot}"
         if "===H3_PROMPT===" not in shot:
-            return match.group(0)
+            shot = f"===H3_PROMPT===\n{shot}"
         sections = []
         for marker in ("===SCENE_INSTRUCTION===", "===VIDEO_INSTRUCTION===", "===AUDIO_INSTRUCTION==="):
             if marker not in shot:
@@ -317,7 +314,16 @@ class StoryDirector:
         params = {"max_tokens": max_tokens, "temperature": temperature, "top_k": top_k, "top_p": top_p,
                   "min_p": min_p, "repeat_penalty": repeat_penalty}
         print(f"[StoryDirector] 准备生成 {count} 个 H3 分段，模式={mode}，风格={story_style}，启用素材={len([a for a in state['assets'] if a.get('enabled', True)])}", flush=True)
-        result = LLAMA.complete(config, system, user, seed=seed, **params)
+        try:
+            import folder_paths
+            input_root = folder_paths.get_input_directory()
+            image_paths = [os.path.join(input_root, _safe_relative(asset["path"]).replace("/", os.sep))
+                           for asset in state["assets"] if asset.get("enabled", True) and asset["type"] == "image"]
+        except (ImportError, KeyError):
+            image_paths = []
+        result = LLAMA.complete(config, system, user, seed=seed, image_paths=image_paths, **params)
+        _save_last_processed_script(result, state)
+        print(f"[StoryDirector] 原始模型输出已保存：{_last_processed_file()}", flush=True)
         print("[StoryDirector] 正在校验 H3 分段结构", flush=True)
         normalized = normalize_schedule_sections(result)
         if normalized != result:

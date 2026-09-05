@@ -1,5 +1,7 @@
 """llama-cpp-python 本地模型适配器。"""
 
+import base64
+import mimetypes
 import os
 import time
 
@@ -54,7 +56,7 @@ class LocalLlama:
         print(f"[StoryDirector] 模型加载完成，耗时 {time.perf_counter() - started:.1f} 秒", flush=True)
         return self._llm
 
-    def complete(self, config, system, user, seed=0, **params):
+    def complete(self, config, system, user, seed=0, image_paths=(), **params):
         llm = self.load(config)
         allowed = {"max_tokens", "temperature", "top_k", "top_p", "min_p", "repeat_penalty"}
         options = {k: v for k, v in params.items() if k in allowed and v is not None}
@@ -63,8 +65,16 @@ class LocalLlama:
         first_token_at = None
         pieces = []
         chunks = 0
+        content = []
+        for path in image_paths:
+            mime = mimetypes.guess_type(path)[0] or "image/png"
+            with open(path, "rb") as handle:
+                encoded = base64.b64encode(handle.read()).decode("ascii")
+            content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}})
+        content.append({"type": "text", "text": user})
+        print(f"[StoryDirector] 已向 Qwen3.5 提交 {len(image_paths)} 张参考图", flush=True)
         stream = llm.create_chat_completion(
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
             seed=int(seed), stream=True, **options,
         )
         for event in stream:
