@@ -29,7 +29,7 @@ class StoryDirectorTests(unittest.TestCase):
         catalog = NODES.mature_catalog({"images": [{"path": "story_director/hero.png", "type": "角色", "name": "hero"}],
                                         "videos": [{"path": "story_director/ref.mp4", "name": "ref"}]})
         self.assertEqual([a["name"] for a in catalog["images"]], ["hero"])
-        self.assertEqual(catalog["videos"][0]["type"], "其他")
+        self.assertEqual(catalog["videos"][0]["type"], "主体")
 
     def test_fallback_uses_h3_block_contract(self):
         state = {"segment_count": "2", "preference": "推镜"}
@@ -45,6 +45,15 @@ class StoryDirectorTests(unittest.TestCase):
         valid = NODES.compile_fallback("门打开。", {"segment_count": "1"})
         with self.assertRaises(ValueError):
             NODES.validate_script(valid.replace("overall_soundscape:", "soundscape:"), 1)
+
+    def test_uploaded_assets_get_semantic_defaults(self):
+        assets = NODES.normalize_assets([
+            {"path": "story_director/hero.png", "type": "image"},
+            {"path": "story_director/move.mp4", "type": "video"},
+            {"path": "story_director/voice.wav", "type": "audio"},
+        ])
+        self.assertEqual([asset["role"] for asset in assets], ["角色", "主体", "音色"])
+        self.assertEqual([asset["name"] for asset in assets], ["hero", "move", "voice"])
 
     def test_material_intros_keep_media_groups(self):
         assets = NODES.normalize_assets([

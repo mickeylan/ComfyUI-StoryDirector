@@ -18,7 +18,7 @@ from .sheding.prompt_enhancer_rules import build_enhancer_prompt
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"})
 VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".webm", ".mkv", ".avi"})
 AUDIO_EXTENSIONS = frozenset({".wav", ".mp3", ".flac", ".m4a", ".ogg", ".aac", ".wma", ".opus"})
-ASSET_ROLES = ("角色", "场景", "道具", "分镜", "音效", "音乐", "其他")
+ASSET_ROLES = ("角色", "场景", "道具", "分镜", "主体", "运镜", "特效", "音色", "音效", "配乐", "念白", "音乐", "其他")
 
 
 def _last_processed_file():
@@ -91,7 +91,8 @@ def normalize_assets(value) -> list[dict]:
                 for item in (source.get(key) or []):
                     if isinstance(item, dict):
                         copied = dict(item)
-                        copied.setdefault("role", copied.get("type", "其他"))
+                        if copied.get("type"):
+                            copied.setdefault("role", copied["type"])
                         copied["type"] = kind
                         data.append(copied)
     if not isinstance(data, list):
@@ -108,8 +109,9 @@ def normalize_assets(value) -> list[dict]:
         except (TypeError, ValueError):
             continue
         entry = dict(item)
-        entry.update({"type": kind, "role": item.get("role") if item.get("role") in ASSET_ROLES else "其他",
-                      "name": str(item.get("name") or os.path.basename(path))[:180],
+        default_role = "角色" if kind == "image" else "主体" if kind == "video" else "音色"
+        entry.update({"type": kind, "role": item.get("role") if item.get("role") in ASSET_ROLES else default_role,
+                      "name": str(item.get("name") or os.path.splitext(os.path.basename(path))[0])[:180].strip(),
                       "description": str(item.get("description", ""))[:2000], "path": path,
                       "enabled": bool(item.get("enabled", True)), "order": len(result)})
         result.append(entry)
