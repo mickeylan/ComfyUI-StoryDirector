@@ -258,7 +258,7 @@ def build_timeline_data(plan, segment_duration, fps=24):
                 for index, item in enumerate(plan["segments"])]
     return {"mainTrackEnabled": True, "audioTrackEnabled": True, "motionTrackEnabled": True,
             "reference_mode": "REF2VA", "prompt_format": "minimax", "frame_rate": fps,
-            "overall_soundscape": plan["overall_soundscape"],
+            "global_prompt": plan["global_prompt"], "overall_soundscape": plan["overall_soundscape"],
             "non_diegetic_music": plan["non_diegetic_music"], "segments": segments,
             "motionSegments": [], "audioSegments": []}
 
