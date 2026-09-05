@@ -11,6 +11,10 @@ import os
 import re
 from pathlib import PurePosixPath
 
+import numpy as np
+import torch
+from PIL import Image, ImageOps
+
 from .llama_backend import LLAMA
 from .presets.script import SEGMENT_COUNT_OPTIONS, build_director_prompt, _resolve_segment_count
 from .sheding.story_styles import STORY_STYLES
@@ -148,6 +152,30 @@ def _state(value) -> dict:
     return parsed
 
 
+def load_reference_images(assets):
+    import folder_paths
+
+    input_root = folder_paths.get_input_directory()
+    paths = [os.path.join(input_root, _safe_relative(asset["path"]).replace("/", os.sep))
+             for asset in assets if asset.get("enabled", True) and asset["type"] == "image"]
+    if not paths:
+        return torch.empty((0, 1, 1, 3), dtype=torch.float32)
+
+    with Image.open(paths[0]) as first:
+        first = ImageOps.exif_transpose(first)
+        width, height = first.size
+    scale = min(1.0, 1920 / width, 1080 / height)
+    target = (max(1, round(width * scale)), max(1, round(height * scale)))
+    images = []
+    for path in paths:
+        with Image.open(path) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            if image.size != target:
+                image = ImageOps.pad(image, target, method=Image.Resampling.LANCZOS, color=(0, 0, 0))
+            images.append(torch.from_numpy(np.asarray(image, dtype=np.float32).copy()).div_(255.0))
+    return torch.stack(images)
+
+
 def _material_intros(assets):
     intros = {"image": [], "video": [], "audio": []}
     counters = {"image": 0, "video": 0, "audio": 0}
@@ -281,8 +309,8 @@ class StoryDirector:
             "llm_mmproj": (mmproj_models,),
         }}
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING")
-    RETURN_NAMES = ("总提示词", "MiniMaxH3 Director 时间线 JSON", "素材目录 JSON")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "IMAGE")
+    RETURN_NAMES = ("总提示词", "MiniMaxH3 Director 时间线 JSON", "素材目录 JSON", "参考图片")
     FUNCTION = "direct"
     CATEGORY = "StoryDirector"
     OUTPUT_NODE = True
@@ -294,16 +322,17 @@ class StoryDirector:
         state.update({"segment_count": segment_count, "segment_duration": segment_duration, "preference": preference})
         count = _resolve_segment_count(segment_count)
         catalog = json.dumps(mature_catalog(state["assets"]), ensure_ascii=False, indent=2)
+        reference_images = load_reference_images(state["assets"])
         if str(prompt_override or "").strip():
             plan = apply_reference_contract(validate_director_plan(prompt_override, count), state["assets"])
             timeline_data = json.dumps(build_timeline_data(plan, segment_duration), ensure_ascii=False, indent=2)
             _save_last_processed_script(plan["global_prompt"], timeline_data, state)
-            return plan["global_prompt"], timeline_data, catalog
+            return plan["global_prompt"], timeline_data, catalog, reference_images
         if mode == "离线预览":
             plan = apply_reference_contract(validate_director_plan(compile_fallback(story, state), count), state["assets"])
             timeline_data = json.dumps(build_timeline_data(plan, segment_duration), ensure_ascii=False, indent=2)
             _save_last_processed_script(plan["global_prompt"], timeline_data, state)
-            return plan["global_prompt"], timeline_data, catalog
+            return plan["global_prompt"], timeline_data, catalog, reference_images
         if not llm_model or llm_model.startswith("未选择"):
             raise ValueError("拆解/生成模式必须选择 Qwen3.5 GGUF")
         if not llm_mmproj or llm_mmproj.startswith("未选择"):
@@ -328,7 +357,7 @@ class StoryDirector:
         timeline_data = json.dumps(build_timeline_data(plan, segment_duration), ensure_ascii=False, indent=2)
         _save_last_processed_script(plan["global_prompt"], timeline_data, state)
         print(f"[StoryDirector] Director 结果已保存：{_last_processed_file()}", flush=True)
-        return plan["global_prompt"], timeline_data, catalog
+        return plan["global_prompt"], timeline_data, catalog, reference_images
 
 
 NODE_CLASS_MAPPINGS = {"StoryDirector": StoryDirector}

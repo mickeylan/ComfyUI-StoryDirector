@@ -7,6 +7,8 @@ import types
 import unittest
 from unittest import mock
 
+from PIL import Image
+
 ROOT = pathlib.Path(__file__).parents[1]
 PACKAGE = types.ModuleType("storydirector_test")
 PACKAGE.__path__ = [str(ROOT)]
@@ -85,26 +87,49 @@ class StoryDirectorTests(unittest.TestCase):
                 result = NODES.load_last_processed_script()
         self.assertEqual(result["global_prompt"], "总提示词")
 
+    def test_reference_images_keep_enabled_order_and_common_canvas(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Image.new("RGB", (200, 100), (255, 0, 0)).save(pathlib.Path(directory) / "a.png")
+            Image.new("RGB", (100, 200), (0, 255, 0)).save(pathlib.Path(directory) / "b.png")
+            folder_paths = types.ModuleType("folder_paths")
+            folder_paths.get_input_directory = lambda: directory
+            assets = NODES.normalize_assets([
+                {"path": "story_director/a.png", "type": "image", "name": "A"},
+                {"path": "story_director/off.png", "type": "image", "name": "off", "enabled": False},
+                {"path": "story_director/b.png", "type": "image", "name": "B"},
+            ])
+            managed = pathlib.Path(directory) / "story_director"
+            managed.mkdir()
+            (pathlib.Path(directory) / "a.png").replace(managed / "a.png")
+            (pathlib.Path(directory) / "b.png").replace(managed / "b.png")
+            with mock.patch.dict(sys.modules, {"folder_paths": folder_paths}):
+                images = NODES.load_reference_images(assets)
+        self.assertEqual(tuple(images.shape), (2, 100, 200, 3))
+        self.assertGreater(float(images[0, 50, 100, 0]), 0.99)
+        self.assertGreater(float(images[1, 50, 100, 1]), 0.99)
+
     def test_node_contract_preserves_input_order(self):
         schema = NODES.StoryDirector.INPUT_TYPES()
         self.assertEqual(list(schema["required"])[-2:], ["director_state", "llm_mmproj"])
         self.assertEqual(NODES.StoryDirector.RETURN_NAMES,
-                         ("总提示词", "MiniMaxH3 Director 时间线 JSON", "素材目录 JSON"))
+                         ("总提示词", "MiniMaxH3 Director 时间线 JSON", "素材目录 JSON", "参考图片"))
         self.assertEqual(list(NODES.NODE_CLASS_MAPPINGS), ["StoryDirector"])
 
     def test_offline_node_execution(self):
         with tempfile.TemporaryDirectory() as directory:
             target = pathlib.Path(directory) / "last.json"
             with mock.patch.object(NODES, "_last_processed_file", return_value=str(target)):
-                global_prompt, timeline_json, catalog = NODES.StoryDirector().direct(
+                with mock.patch.object(NODES, "load_reference_images", return_value="images"):
+                    global_prompt, timeline_json, catalog, images = NODES.StoryDirector().direct(
                     story="门打开。侦探走入。", prompt_override="", mode="离线预览",
                     story_style="悬疑推理", segment_count="4段", segment_duration=5,
                     prompt_lang="中文 [ZH]", preference="推镜", custom_rules="", enhance=False,
                     llm_model="未选择 Qwen3.5 GGUF", llm_mmproj="未选择 Qwen3.5 mmproj",
                     context_size=32768, gpu_layers=-1, max_tokens=8192, temperature=0.6,
                     top_k=40, top_p=0.9, min_p=0.05, repeat_penalty=1.05, seed=0,
-                    director_state='{"assets": []}')
+                        director_state='{"assets": []}')
         self.assertTrue(global_prompt)
+        self.assertEqual(images, "images")
         self.assertEqual(len(json.loads(timeline_json)["segments"]), 4)
         self.assertEqual(json.loads(catalog), {"images": [], "videos": [], "audios": []})
 
