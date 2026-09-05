@@ -76,12 +76,12 @@ class LocalLlama:
                 print(f"[StoryDirector] 收到首个输出，提示词处理耗时 {first_token_at - started:.1f} 秒", flush=True)
             pieces.append(content)
             chunks += 1
-            if chunks % 32 == 0:
+            if chunks % 256 == 0:
                 elapsed = time.perf_counter() - first_token_at
-                print(f"[StoryDirector] 生成中：{chunks} 个输出片段，{sum(map(len, pieces))} 字符，耗时 {elapsed:.1f} 秒", flush=True)
+                print(f"[StoryDirector] 生成中：已接收 {sum(map(len, pieces))} 字符，耗时 {elapsed:.1f} 秒", flush=True)
         text = "".join(pieces)
         elapsed = time.perf_counter() - started
-        print(f"[StoryDirector] 生成完成：{chunks} 个输出片段，{len(text)} 字符，总耗时 {elapsed:.1f} 秒", flush=True)
+        print(f"[StoryDirector] 生成完成：{len(text)} 字符，总耗时 {elapsed:.1f} 秒", flush=True)
         if not text.strip():
             raise RuntimeError("Qwen3.5 没有返回任何文本，请检查模型与 mmproj 是否匹配")
         return text

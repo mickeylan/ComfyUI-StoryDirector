@@ -39,6 +39,27 @@ class StoryDirectorTests(unittest.TestCase):
         self.assertIn("===AUDIO_INSTRUCTION===", prompt)
         self.assertEqual(NODES.validate_script(prompt, 2), prompt)
 
+    def test_generated_script_can_preserve_extra_complete_segments(self):
+        script = NODES.compile_fallback("一。二。三。四。五。六。", {"segment_count": "6"})
+        self.assertEqual(NODES.validate_script(script), script)
+
+    def test_missing_schedule_sections_are_normalized(self):
+        script = NODES.compile_fallback("门打开。", {"segment_count": "1"})
+        incomplete = script.split("===SCENE_INSTRUCTION===", 1)[0] + "[SHOT_END]"
+        normalized = NODES.normalize_schedule_sections(incomplete)
+        self.assertEqual(NODES.validate_script(normalized, 1), normalized)
+        self.assertIn('===SCENE_INSTRUCTION===\n{"slots": []}', normalized)
+        self.assertIn('===VIDEO_INSTRUCTION===\n{"slots": []}', normalized)
+        self.assertIn('===AUDIO_INSTRUCTION===\n{"slots": []}', normalized)
+
+    def test_markdown_and_missing_h3_markers_are_normalized(self):
+        script = NODES.compile_fallback("门打开。", {"segment_count": "1"})
+        markdown = script.replace("===H3_PROMPT===", "### H3_PROMPT").replace("===SCENE_INSTRUCTION===", "**SCENE_INSTRUCTION**")
+        normalized = NODES.normalize_schedule_sections(markdown)
+        self.assertEqual(NODES.validate_script(normalized, 1), normalized)
+        unmarked = script.replace("===H3_PROMPT===\n", "")
+        self.assertEqual(NODES.validate_script(NODES.normalize_schedule_sections(unmarked), 1), NODES.normalize_schedule_sections(unmarked))
+
     def test_validation_rejects_incomplete_script(self):
         with self.assertRaises(ValueError):
             NODES.validate_script("[SHOT_START]\n===H3_PROMPT===\npartial", 1)

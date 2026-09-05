@@ -204,6 +204,29 @@ def compile_fallback(story: str, state: dict) -> str:
     return "\n\n".join(blocks)
 
 
+def normalize_schedule_sections(script: str) -> str:
+    """Add empty scheduling sections when the LLM returns a valid H3 body without them."""
+    def normalize(match):
+        shot = match.group(1).strip()
+        marker_names = ("H3_PROMPT", "SCENE_INSTRUCTION", "VIDEO_INSTRUCTION", "AUDIO_INSTRUCTION")
+        for name in marker_names:
+            shot = re.sub(rf"(?im)^\s*(?:#+\s*)?=*[\s`*_]*{name}[\s`*_]*=*\s*$", f"==={name}===", shot)
+        required_fields = ("subject_definitions:", "summary:", "retention_analysis:", "detailed_description:", "overall_soundscape:", "non_diegetic_music:")
+        if "===H3_PROMPT===" not in shot and all(field in shot for field in required_fields):
+            shot = f"===H3_PROMPT===\n{shot}"
+        if "===H3_PROMPT===" not in shot:
+            return match.group(0)
+        sections = []
+        for marker in ("===SCENE_INSTRUCTION===", "===VIDEO_INSTRUCTION===", "===AUDIO_INSTRUCTION==="):
+            if marker not in shot:
+                sections.append(f"{marker}\n{{\"slots\": []}}")
+        if sections:
+            shot = f"{shot}\n" + "\n".join(sections)
+        return f"[SHOT_START]\n{shot}\n[SHOT_END]"
+
+    return re.sub(r"\[SHOT_START\](.*?)\[SHOT_END\]", normalize, str(script or ""), flags=re.DOTALL)
+
+
 def validate_script(script: str, expected_count: int | None = None) -> str:
     text = str(script or "").strip()
     shots = re.findall(r"\[SHOT_START\](.*?)\[SHOT_END\]", text, re.DOTALL)
@@ -296,11 +319,17 @@ class StoryDirector:
         print(f"[StoryDirector] 准备生成 {count} 个 H3 分段，模式={mode}，风格={story_style}，启用素材={len([a for a in state['assets'] if a.get('enabled', True)])}", flush=True)
         result = LLAMA.complete(config, system, user, seed=seed, **params)
         print("[StoryDirector] 正在校验 H3 分段结构", flush=True)
-        script = validate_script(result, count)
+        normalized = normalize_schedule_sections(result)
+        if normalized != result:
+            print("[StoryDirector] 模型遗漏了部分调度区块，已补为空 slots 并保留 H3 内容", flush=True)
+        script = validate_script(normalized)
+        actual_count = len(re.findall(r"\[SHOT_START\]", script))
+        if actual_count != count:
+            print(f"[StoryDirector] 警告：要求 {count} 个分段，模型实际返回 {actual_count} 个；保留完整结果，避免丢失剧情", flush=True)
         if enhance:
-            print(f"[StoryDirector] 开始二次增强 {count} 个分段", flush=True)
+            print(f"[StoryDirector] 开始二次增强 {actual_count} 个分段", flush=True)
             script = validate_script(enhance_script(script, config, story_style, segment_duration,
-                                                    prompt_lang, preference, custom_rules, seed), count)
+                                                    prompt_lang, preference, custom_rules, seed))
         _save_last_processed_script(script, state)
         return script, catalog
 
