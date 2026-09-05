@@ -73,6 +73,9 @@ class StoryDirectorTests(unittest.TestCase):
     def test_only_one_node_is_registered(self):
         self.assertEqual(list(NODES.NODE_CLASS_MAPPINGS), ["StoryDirector"])
         self.assertTrue(NODES.StoryDirector.OUTPUT_NODE)
+        schema = NODES.StoryDirector.INPUT_TYPES()
+        self.assertIn("director_state", schema["required"])
+        self.assertNotIn("hidden", schema)
 
     def test_offline_node_execution(self):
         with tempfile.TemporaryDirectory() as directory:

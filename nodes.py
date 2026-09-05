@@ -247,7 +247,8 @@ class StoryDirector:
             "min_p": ("FLOAT", {"default": 0.05, "min": 0.0, "max": 1.0, "step": 0.01}),
             "repeat_penalty": ("FLOAT", {"default": 1.05, "min": 0.0, "max": 10.0, "step": 0.01}),
             "seed": ("INT", {"default": 0, "min": 0, "max": 9223372036854775807}),
-        }, "hidden": {"director_state": ("STRING", {"default": '{"assets": []}', "multiline": True})}}
+            "director_state": ("STRING", {"default": '{"assets": []}', "multiline": True}),
+        }}
 
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("H3完整剧本", "素材目录 JSON")
