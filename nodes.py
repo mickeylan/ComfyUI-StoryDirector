@@ -246,7 +246,6 @@ class StoryDirector:
             "custom_rules": ("STRING", {"default": "", "multiline": True}),
             "enhance": ("BOOLEAN", {"default": False}),
             "llm_model": (models,),
-            "llm_mmproj": (mmproj_models,),
             "context_size": ("INT", {"default": 32768, "min": 1024, "max": 262144, "step": 128}),
             "gpu_layers": ("INT", {"default": -1, "min": -1, "max": 999}),
             "max_tokens": ("INT", {"default": 8192, "min": 256, "max": 262144, "step": 256}),
@@ -257,6 +256,7 @@ class StoryDirector:
             "repeat_penalty": ("FLOAT", {"default": 1.05, "min": 0.0, "max": 10.0, "step": 0.01}),
             "seed": ("INT", {"default": 0, "min": 0, "max": 9223372036854775807}),
             "director_state": ("STRING", {"default": '{"assets": []}', "multiline": True}),
+            "llm_mmproj": (mmproj_models,),
         }}
 
     RETURN_TYPES = ("STRING", "STRING")

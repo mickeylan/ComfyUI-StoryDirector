@@ -171,7 +171,12 @@ app.registerExtension({
       return result;
     };
     const oldConfigured = nodeType.prototype.onConfigure;
-    nodeType.prototype.onConfigure = function () {
+    nodeType.prototype.onConfigure = function (info) {
+      const values = info?.widgets_values;
+      if (Array.isArray(values) && values.length >= 22 && typeof values[21] === "string" && values[21].trim().startsWith("{") && typeof values[11] === "string") {
+        const mmproj = values.splice(11, 1)[0];
+        values.push(mmproj);
+      }
       const result = oldConfigured?.apply(this, arguments);
       setTimeout(() => {this.__storyDirectorRenderStory?.();this.__storyDirectorRenderAssets?.()}, 0);
       return result;

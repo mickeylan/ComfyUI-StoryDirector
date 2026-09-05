@@ -30,7 +30,6 @@
         "",
         false,
         "未选择 Qwen3.5 GGUF",
-        "未选择 Qwen3.5 mmproj",
         32768,
         -1,
         8192,
@@ -40,7 +39,8 @@
         0.05,
         1.05,
         0,
-        "{\"assets\":[],\"preference\":{\"shot_size\":\"根据剧情\",\"camera_move\":\"缓慢推进\",\"cut_rhythm\":\"2~5镜\",\"transition\":\"硬切\",\"music_style\":\"紧张悬疑\",\"creative_req\":\"节奏紧凑\",\"detail_length\":\"标准 (350-500字)\",\"custom\":\"\"}}"
+        "{\"assets\":[],\"preference\":{\"shot_size\":\"根据剧情\",\"camera_move\":\"缓慢推进\",\"cut_rhythm\":\"2~5镜\",\"transition\":\"硬切\",\"music_style\":\"紧张悬疑\",\"creative_req\":\"节奏紧凑\",\"detail_length\":\"标准 (350-500字)\",\"custom\":\"\"}}",
+        "未选择 Qwen3.5 mmproj"
       ]
     }
   ],

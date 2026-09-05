@@ -90,6 +90,7 @@ class StoryDirectorTests(unittest.TestCase):
         self.assertTrue(NODES.StoryDirector.OUTPUT_NODE)
         schema = NODES.StoryDirector.INPUT_TYPES()
         self.assertIn("director_state", schema["required"])
+        self.assertEqual(list(schema["required"])[-2:], ["director_state", "llm_mmproj"])
         self.assertNotIn("hidden", schema)
 
     def test_offline_node_execution(self):
