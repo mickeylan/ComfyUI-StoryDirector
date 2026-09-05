@@ -52,7 +52,8 @@ def main():
         path = Path(request[key])
         if path.suffix.lower() != ".gguf" or not path.is_file():
             raise ValueError(f"Invalid {key}")
-    print(RESULT_PREFIX + json.dumps({"text": complete(request)}, ensure_ascii=False), flush=True)
+    sys.stdout.buffer.write((RESULT_PREFIX + json.dumps({"text": complete(request)}, ensure_ascii=True) + "\n").encode("ascii"))
+    sys.stdout.buffer.flush()
 
 
 if __name__ == "__main__":
