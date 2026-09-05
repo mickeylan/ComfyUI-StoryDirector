@@ -66,6 +66,7 @@ class StoryDirectorTests(unittest.TestCase):
         self.assertEqual(timeline["reference_mode"], "REF2VA")
         self.assertEqual(timeline["prompt_format"], "minimax")
         self.assertEqual(timeline["global_prompt"], "风格")
+        self.assertEqual((timeline["normalStartFrame"], timeline["normalDurationFrames"]), (0, 240))
         self.assertEqual([(x["start"], x["length"]) for x in timeline["segments"]], [(0, 120), (120, 120)])
         self.assertEqual([x["prompt"] for x in timeline["segments"]], ["第一镜", "第二镜"])
 

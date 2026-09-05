@@ -256,8 +256,10 @@ def build_timeline_data(plan, segment_duration, fps=24):
     segments = [{"id": f"story-director-{index + 1}", "start": index * length,
                  "length": length, "prompt": item["prompt"], "type": "text", "isEndFrame": False}
                 for index, item in enumerate(plan["segments"])]
+    total_frames = len(segments) * length
     return {"mainTrackEnabled": True, "audioTrackEnabled": True, "motionTrackEnabled": True,
             "reference_mode": "REF2VA", "prompt_format": "minimax", "frame_rate": fps,
+            "normalStartFrame": 0, "normalDurationFrames": total_frames,
             "global_prompt": plan["global_prompt"], "overall_soundscape": plan["overall_soundscape"],
             "non_diegetic_music": plan["non_diegetic_music"], "segments": segments,
             "motionSegments": [], "audioSegments": []}
