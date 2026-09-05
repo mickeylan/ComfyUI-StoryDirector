@@ -42,7 +42,7 @@ class LocalLlama:
             raise RuntimeError("Qwen3.5 需要带 MTMD 支持的 llama-cpp-python") from exc
         self.close()
         print(f"[StoryDirector] 正在加载 Qwen3.5：{os.path.basename(path)}", flush=True)
-        print(f"[StoryDirector] 正在加载 mmproj：{os.path.basename(mmproj_path)}（视觉编码使用 CPU）", flush=True)
+        print(f"[StoryDirector] 正在加载 mmproj：{os.path.basename(mmproj_path)}（视觉编码使用 GPU）", flush=True)
         started = time.perf_counter()
         kwargs = {
             "model_path": path,
@@ -50,7 +50,7 @@ class LocalLlama:
             "n_gpu_layers": int(config.get("n_gpu_layers", -1)),
             "verbose": False,
         }
-        kwargs["chat_handler"] = MTMDChatHandler(clip_model_path=mmproj_path, verbose=False, use_gpu=False)
+        kwargs["chat_handler"] = MTMDChatHandler(clip_model_path=mmproj_path, verbose=False, use_gpu=True)
         self._llm = Llama(**kwargs)
         self._config = config
         print(f"[StoryDirector] 模型加载完成，耗时 {time.perf_counter() - started:.1f} 秒", flush=True)
@@ -66,6 +66,7 @@ class LocalLlama:
         pieces = []
         chunks = 0
         content = []
+        print(f"[StoryDirector] 正在读取 {len(image_paths)} 张参考图", flush=True)
         for path in image_paths:
             mime = mimetypes.guess_type(path)[0] or "image/png"
             with open(path, "rb") as handle:
