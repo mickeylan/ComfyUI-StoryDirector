@@ -24,7 +24,7 @@ def complete(request):
     from llama_cpp import Llama
     from llama_cpp.llama_chat_format import MTMDChatHandler
 
-    handler = MTMDChatHandler(clip_model_path=request["mmproj_path"], verbose=False, use_gpu=False)
+    handler = MTMDChatHandler(clip_model_path=request["mmproj_path"], verbose=False, use_gpu=True)
     llm = Llama(
         model_path=request["model_path"], chat_handler=handler, n_gpu_layers=-1,
         n_ctx=max(65536, int(request.get("n_ctx", 65536))), n_batch=64, n_ubatch=64,
