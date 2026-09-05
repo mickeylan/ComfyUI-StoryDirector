@@ -3,6 +3,7 @@
 import base64
 import mimetypes
 import os
+import threading
 import time
 
 
@@ -42,15 +43,21 @@ class LocalLlama:
             raise RuntimeError("Qwen3.5 需要带 MTMD 支持的 llama-cpp-python") from exc
         self.close()
         print(f"[StoryDirector] 正在加载 Qwen3.5：{os.path.basename(path)}", flush=True)
-        print(f"[StoryDirector] 正在加载 mmproj：{os.path.basename(mmproj_path)}（视觉编码使用 GPU）", flush=True)
+        print(f"[StoryDirector] 正在加载 mmproj：{os.path.basename(mmproj_path)}", flush=True)
         started = time.perf_counter()
         kwargs = {
             "model_path": path,
-            "n_ctx": int(config.get("n_ctx", 8192)),
+            "n_ctx": int(config.get("n_ctx", 65536)),
+            "n_batch": 256,
+            "n_ubatch": 256,
             "n_gpu_layers": int(config.get("n_gpu_layers", -1)),
+            "flash_attn": True,
+            "type_k": 8,
+            "type_v": 8,
+            "swa_full": False,
             "verbose": False,
         }
-        kwargs["chat_handler"] = MTMDChatHandler(clip_model_path=mmproj_path, verbose=False, use_gpu=True)
+        kwargs["chat_handler"] = MTMDChatHandler(clip_model_path=mmproj_path, verbose=False, use_gpu=False)
         self._llm = Llama(**kwargs)
         self._config = config
         print(f"[StoryDirector] 模型加载完成，耗时 {time.perf_counter() - started:.1f} 秒", flush=True)
@@ -62,9 +69,6 @@ class LocalLlama:
         options = {k: v for k, v in params.items() if k in allowed and v is not None}
         print(f"[StoryDirector] 开始生成：输入 {len(system) + len(user)} 字符，最大输出 {options.get('max_tokens', '默认')} tokens", flush=True)
         started = time.perf_counter()
-        first_token_at = None
-        pieces = []
-        chunks = 0
         content = []
         print(f"[StoryDirector] 正在读取 {len(image_paths)} 张参考图", flush=True)
         for path in image_paths:
@@ -74,23 +78,22 @@ class LocalLlama:
             content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}})
         content.append({"type": "text", "text": user})
         print(f"[StoryDirector] 已向 Qwen3.5 提交 {len(image_paths)} 张参考图", flush=True)
-        stream = llm.create_chat_completion(
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
-            seed=int(seed), stream=True, **options,
-        )
-        for event in stream:
-            content = event.get("choices", [{}])[0].get("delta", {}).get("content")
-            if not content:
-                continue
-            if first_token_at is None:
-                first_token_at = time.perf_counter()
-                print(f"[StoryDirector] 收到首个输出，提示词处理耗时 {first_token_at - started:.1f} 秒", flush=True)
-            pieces.append(content)
-            chunks += 1
-            if chunks % 256 == 0:
-                elapsed = time.perf_counter() - first_token_at
-                print(f"[StoryDirector] 生成中：已接收 {sum(map(len, pieces))} 字符，耗时 {elapsed:.1f} 秒", flush=True)
-        text = "".join(pieces)
+        done = threading.Event()
+        def log_progress():
+            while not done.wait(15):
+                print(f"[StoryDirector] Qwen3.5 仍在生成，已耗时 {time.perf_counter() - started:.1f} 秒", flush=True)
+        reporter = threading.Thread(target=log_progress, daemon=True)
+        reporter.start()
+        try:
+            response = llm.create_chat_completion(
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": content}],
+                seed=int(seed), reasoning_budget=0, **options,
+            )
+        finally:
+            done.set()
+            reporter.join()
+        message = response["choices"][0]["message"]
+        text = str(message.get("content") or message.get("reasoning_content") or "")
         elapsed = time.perf_counter() - started
         print(f"[StoryDirector] 生成完成：{len(text)} 字符，总耗时 {elapsed:.1f} 秒", flush=True)
         if not text.strip():
