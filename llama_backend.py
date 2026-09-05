@@ -1,6 +1,7 @@
 """llama-cpp-python 本地模型适配器。"""
 
 import os
+import time
 
 
 class LocalLlama:
@@ -38,6 +39,9 @@ class LocalLlama:
         except ImportError as exc:
             raise RuntimeError("Qwen3.5 需要带 MTMD 支持的 llama-cpp-python") from exc
         self.close()
+        print(f"[StoryDirector] 正在加载 Qwen3.5：{os.path.basename(path)}", flush=True)
+        print(f"[StoryDirector] 正在加载 mmproj：{os.path.basename(mmproj_path)}（视觉编码使用 CPU）", flush=True)
+        started = time.perf_counter()
         kwargs = {
             "model_path": path,
             "n_ctx": int(config.get("n_ctx", 8192)),
@@ -47,17 +51,40 @@ class LocalLlama:
         kwargs["chat_handler"] = MTMDChatHandler(clip_model_path=mmproj_path, verbose=False, use_gpu=False)
         self._llm = Llama(**kwargs)
         self._config = config
+        print(f"[StoryDirector] 模型加载完成，耗时 {time.perf_counter() - started:.1f} 秒", flush=True)
         return self._llm
 
     def complete(self, config, system, user, seed=0, **params):
         llm = self.load(config)
         allowed = {"max_tokens", "temperature", "top_k", "top_p", "min_p", "repeat_penalty"}
         options = {k: v for k, v in params.items() if k in allowed and v is not None}
-        result = llm.create_chat_completion(
+        print(f"[StoryDirector] 开始生成：输入 {len(system) + len(user)} 字符，最大输出 {options.get('max_tokens', '默认')} tokens", flush=True)
+        started = time.perf_counter()
+        first_token_at = None
+        pieces = []
+        chunks = 0
+        stream = llm.create_chat_completion(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            seed=int(seed), **options,
+            seed=int(seed), stream=True, **options,
         )
-        return result["choices"][0]["message"]["content"]
+        for event in stream:
+            content = event.get("choices", [{}])[0].get("delta", {}).get("content")
+            if not content:
+                continue
+            if first_token_at is None:
+                first_token_at = time.perf_counter()
+                print(f"[StoryDirector] 收到首个输出，提示词处理耗时 {first_token_at - started:.1f} 秒", flush=True)
+            pieces.append(content)
+            chunks += 1
+            if chunks % 32 == 0:
+                elapsed = time.perf_counter() - first_token_at
+                print(f"[StoryDirector] 生成中：{chunks} 个输出片段，{sum(map(len, pieces))} 字符，耗时 {elapsed:.1f} 秒", flush=True)
+        text = "".join(pieces)
+        elapsed = time.perf_counter() - started
+        print(f"[StoryDirector] 生成完成：{chunks} 个输出片段，{len(text)} 字符，总耗时 {elapsed:.1f} 秒", flush=True)
+        if not text.strip():
+            raise RuntimeError("Qwen3.5 没有返回任何文本，请检查模型与 mmproj 是否匹配")
+        return text
 
     def close(self):
         if self._llm is not None:

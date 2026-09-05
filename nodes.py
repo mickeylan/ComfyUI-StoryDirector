@@ -293,9 +293,12 @@ class StoryDirector:
         config = {"model": llm_model, "mmproj": llm_mmproj, "n_ctx": context_size, "n_gpu_layers": gpu_layers}
         params = {"max_tokens": max_tokens, "temperature": temperature, "top_k": top_k, "top_p": top_p,
                   "min_p": min_p, "repeat_penalty": repeat_penalty}
+        print(f"[StoryDirector] 准备生成 {count} 个 H3 分段，模式={mode}，风格={story_style}，启用素材={len([a for a in state['assets'] if a.get('enabled', True)])}", flush=True)
         result = LLAMA.complete(config, system, user, seed=seed, **params)
+        print("[StoryDirector] 正在校验 H3 分段结构", flush=True)
         script = validate_script(result, count)
         if enhance:
+            print(f"[StoryDirector] 开始二次增强 {count} 个分段", flush=True)
             script = validate_script(enhance_script(script, config, story_style, segment_duration,
                                                     prompt_lang, preference, custom_rules, seed), count)
         _save_last_processed_script(script, state)
