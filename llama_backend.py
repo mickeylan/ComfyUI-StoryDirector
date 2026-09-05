@@ -1,10 +1,12 @@
 """llama-cpp-python 本地模型适配器。"""
 
 import base64
-import mimetypes
+import io
 import os
 import threading
 import time
+
+from PIL import Image
 
 
 class LocalLlama:
@@ -72,10 +74,14 @@ class LocalLlama:
         content = []
         print(f"[StoryDirector] 正在读取 {len(image_paths)} 张参考图", flush=True)
         for path in image_paths:
-            mime = mimetypes.guess_type(path)[0] or "image/png"
-            with open(path, "rb") as handle:
-                encoded = base64.b64encode(handle.read()).decode("ascii")
-            content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}})
+            with Image.open(path) as image:
+                image = image.convert("RGB")
+                image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+                encoded_image = io.BytesIO()
+                image.save(encoded_image, format="JPEG", quality=88)
+                encoded = base64.b64encode(encoded_image.getvalue()).decode("ascii")
+                print(f"[StoryDirector] 参考图已适配：{os.path.basename(path)} -> {image.width}x{image.height}", flush=True)
+            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}})
         content.append({"type": "text", "text": user})
         print(f"[StoryDirector] 已向 Qwen3.5 提交 {len(image_paths)} 张参考图", flush=True)
         done = threading.Event()
