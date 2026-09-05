@@ -59,7 +59,7 @@ class LocalLlama:
             "swa_full": False,
             "verbose": False,
         }
-        kwargs["chat_handler"] = MTMDChatHandler(clip_model_path=mmproj_path, verbose=False, use_gpu=False)
+        kwargs["chat_handler"] = MTMDChatHandler(clip_model_path=mmproj_path, verbose=False, use_gpu=True)
         self._llm = Llama(**kwargs)
         self._config = config
         print(f"[StoryDirector] 模型加载完成，耗时 {time.perf_counter() - started:.1f} 秒", flush=True)
