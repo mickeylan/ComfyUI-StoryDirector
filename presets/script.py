@@ -278,3 +278,67 @@ def build_shot_prompt(
         User_Story=user_story,
         User_Tags=user_tags,
     )
+
+
+def build_director_prompt(user_story, mode, story_style, segment_count_label, lang,
+                          segment_duration, assets, preference="", custom_rules=""):
+    """Build the MiniMaxH3-Director global-prompt + timeline planning request."""
+    from ..sheding.mode_instructions import MODE_INSTRUCTIONS as mode_instructions
+    from ..sheding.story_styles import STORY_STYLES as styles
+
+    count = _resolve_segment_count(segment_count_label)
+    language = "简体中文" if lang == "zh" else "English"
+    asset_lines = []
+    counters = {"image": 0, "video": 0, "audio": 0}
+    tags = {"image": "Picture", "video": "Video", "audio": "Audio"}
+    for asset in assets:
+        if not asset.get("enabled", True):
+            continue
+        kind = asset["type"]
+        counters[kind] += 1
+        tag = f"<{tags[kind]} {counters[kind]}>"
+        name = asset.get("reference_name") or asset.get("name") or tag
+        description = str(asset.get("description") or "").strip()
+        asset_lines.append(f"- {tag}: {name}" + (f"；{description}" if description else ""))
+
+    return f'''# Role: MiniMax H3 Director 故事规划师
+你必须把故事转换成 ComfyUI-MiniMaxH3-Director 的编辑数据，而不是为每个分段重复完整六段提示词。
+
+## 输出
+只输出一个 JSON 对象，不要 markdown、解释、思考过程或额外文字：
+{{
+  "global_prompt": "整条视频共用的视觉风格、场景基调、subject_definitions 与 retention_analysis",
+  "overall_soundscape": "整条视频共用的环境声与动作声",
+  "non_diegetic_music": "音乐描述；无配乐写 N/A",
+  "segments": [{{"prompt": "该分镜独有的自然语言画面、动作、运镜、声音和对白"}}]
+}}
+
+## 严格规则
+- segments 必须恰好 {count} 项，每项仅允许 prompt 字段。
+- 所有内容使用{language}；<d> 内对白保留故事原语言。
+- global_prompt 只写跨分镜稳定内容，不写 [Shot N]，不写时间戳，不写 detailed_description 标题。
+- global_prompt 按 MiniMax H3 参考格式包含 subject_definitions 和 retention_analysis；图片角色使用 <Subject N> 与 <Picture N> 明确绑定。
+- 每个 segments[].prompt 只写本镜独有内容，不重复 subject_definitions、retention_analysis、overall_soundscape、non_diegetic_music 或字段标题。
+- 分镜之间保持动作、位置、服装、光线和叙事连续；需要时使用“continuing from the previous shot”。
+- 对白格式：角色名 (Sx) says: <d>[Chinese/English] 原文</d>。
+- 引用只能使用下方存在的标签，编号与素材顺序完全一致，严禁新增或改号。
+- 每个分镜时长约 {int(segment_duration)} 秒；prompt 内不写 [Shot N]，Director 会按 timeline 自动编译编号和时间戳。
+- {"加强镜头细节、动作链与运镜描述。" if preference else "按故事风格规划镜头。"}
+
+## 模式
+{mode_instructions.get(mode, "")}
+
+## 故事风格
+{styles.get(story_style, story_style)}
+
+## 镜头偏好
+{preference or "无额外偏好"}
+
+## 自定义规则
+{custom_rules or "无"}
+
+## 可用素材
+{chr(10).join(asset_lines) or "无参考素材"}
+
+## 用户故事
+{user_story}'''

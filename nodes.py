@@ -12,8 +12,7 @@ import re
 from pathlib import PurePosixPath
 
 from .llama_backend import LLAMA
-from .presets.script import SEGMENT_COUNT_OPTIONS, build_shot_prompt, _resolve_segment_count
-from .sheding.prompt_enhancer_rules import build_enhancer_prompt
+from .presets.script import SEGMENT_COUNT_OPTIONS, build_director_prompt, _resolve_segment_count
 from .sheding.story_styles import STORY_STYLES
 
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"})
@@ -33,10 +32,11 @@ def _last_processed_file():
     return os.path.join(root, "last_processed.json")
 
 
-def _save_last_processed_script(script, state):
+def _save_last_processed_script(global_prompt, timeline_data, state):
     try:
         with open(_last_processed_file(), "w", encoding="utf-8") as handle:
-            json.dump({"script": script, "catalog": mature_catalog(state.get("assets", []))},
+            json.dump({"global_prompt": global_prompt, "timeline_data": timeline_data,
+                       "catalog": mature_catalog(state.get("assets", []))},
                       handle, ensure_ascii=False, indent=2)
     except OSError:
         pass
@@ -46,7 +46,7 @@ def load_last_processed_script():
     try:
         with open(_last_processed_file(), "r", encoding="utf-8-sig") as handle:
             data = json.load(handle)
-        return data if isinstance(data, dict) and isinstance(data.get("script"), str) else None
+        return data if isinstance(data, dict) and isinstance(data.get("global_prompt"), str) and isinstance(data.get("timeline_data"), str) else None
     except (OSError, ValueError):
         return None
 
@@ -166,80 +166,82 @@ def _material_intros(assets):
     return tuple("\n".join(intros[kind]) for kind in ("image", "video", "audio"))
 
 
-def _replace_detailed_description(block, detail):
-    pattern = r"(?ms)(^detailed_description:\s*).*?(?=^overall_soundscape:)"
-    if not re.search(pattern, block):
-        raise ValueError("H3 分段缺少 detailed_description/overall_soundscape 字段")
-    return re.sub(pattern, lambda match: match.group(1) + detail.strip() + "\n", block, count=1)
+def _extract_json_object(value):
+    text = re.sub(r"(?is)<think>.*?</think>", "", str(value or "")).strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end < start:
+        raise ValueError("Qwen3.5 没有返回 Director JSON")
+    try:
+        return json.loads(text[start:end + 1])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Qwen3.5 返回的 Director JSON 无效：{exc}") from exc
 
 
-def enhance_script(script, config, story_style, segment_duration, prompt_lang, preference, custom_rules, seed, image_paths=()):
-    blocks = re.findall(r"\[SHOT_START\].*?\[SHOT_END\]", script, re.DOTALL)
-    style_text = STORY_STYLES.get(story_style, story_style)
-    system = build_enhancer_prompt("zh" if "ZH" in prompt_lang else "en", style_text, segment_duration, preference, custom_rules)
-    output = []
-    for index, block in enumerate(blocks):
-        detail = re.search(r"(?ms)^detailed_description:\s*(.*?)(?=^overall_soundscape:)", block)
-        if not detail:
-            raise ValueError(f"第 {index + 1} 段缺少 detailed_description")
-        request = f"分段 {index + 1}/{len(blocks)}\n\n{block}\n\n原 detailed_description：\n{detail.group(1).strip()}"
-        polished = LLAMA.complete(config, system, request, seed=seed + index, image_paths=image_paths, max_tokens=4096, temperature=0.5)
-        output.append(_replace_detailed_description(block, polished))
-    return "\n\n".join(output)
+def validate_director_plan(value, expected_count=None):
+    data = _extract_json_object(value) if isinstance(value, str) else value
+    if not isinstance(data, dict):
+        raise ValueError("Director 结果必须是 JSON 对象")
+    global_prompt = str(data.get("global_prompt") or "").strip()
+    soundscape = str(data.get("overall_soundscape") or "").strip()
+    music = str(data.get("non_diegetic_music") or "N/A").strip() or "N/A"
+    segments = data.get("segments")
+    if not global_prompt:
+        raise ValueError("Director 结果缺少 global_prompt")
+    if not soundscape:
+        raise ValueError("Director 结果缺少 overall_soundscape")
+    if not isinstance(segments, list) or not segments:
+        raise ValueError("Director 结果缺少 segments")
+    prompts = []
+    for index, segment in enumerate(segments, 1):
+        prompt = str(segment.get("prompt") if isinstance(segment, dict) else "").strip()
+        if not prompt:
+            raise ValueError(f"第 {index} 个分镜缺少 prompt")
+        if re.search(r"(?im)^\s*(?:subject_definitions|retention_analysis|overall_soundscape|non_diegetic_music|detailed_description)\s*:", prompt):
+            raise ValueError(f"第 {index} 个分镜重复了全局字段")
+        prompts.append(prompt)
+    if expected_count is not None and len(prompts) != int(expected_count):
+        raise ValueError(f"分镜数量应为 {expected_count}，实际为 {len(prompts)}")
+    return {"global_prompt": global_prompt, "overall_soundscape": soundscape,
+            "non_diegetic_music": music, "segments": [{"prompt": prompt} for prompt in prompts]}
 
 
-def compile_fallback(story: str, state: dict) -> str:
-    """Offline preview retaining the real H3 six-part/block contract."""
+def apply_reference_contract(plan, assets):
+    images = [asset for asset in assets if asset.get("enabled", True) and asset["type"] == "image"]
+    definitions, retention = [], []
+    for index, asset in enumerate(images, 1):
+        name = asset.get("reference_name") or asset.get("name") or f"Picture {index}"
+        description = str(asset.get("description") or "").strip()
+        definitions.append(f"<Subject {index}> is {name} shown in <Picture {index}>" + (f" ({description})." if description else "."))
+        retention.append(f"<Picture {index}> must preserve <Subject {index}>'s identity and visible appearance across every shot.")
+    global_prompt = plan["global_prompt"].strip()
+    if definitions and not re.search(r"(?im)^\s*subject_definitions\s*:", global_prompt):
+        global_prompt = "subject_definitions:\n" + "\n".join(definitions) + "\n\n" + global_prompt
+    if retention and not re.search(r"(?im)^\s*retention_analysis\s*:", global_prompt):
+        global_prompt += "\n\nretention_analysis:\n" + "\n".join(retention)
+    return {**plan, "global_prompt": global_prompt}
+
+
+def build_timeline_data(plan, segment_duration, fps=24):
+    length = max(1, int(round(float(segment_duration) * fps)))
+    segments = [{"id": f"story-director-{index + 1}", "start": index * length,
+                 "length": length, "prompt": item["prompt"], "type": "text", "isEndFrame": False}
+                for index, item in enumerate(plan["segments"])]
+    return {"mainTrackEnabled": True, "audioTrackEnabled": True, "motionTrackEnabled": True,
+            "reference_mode": "REF2VA", "prompt_format": "minimax", "frame_rate": fps,
+            "overall_soundscape": plan["overall_soundscape"],
+            "non_diegetic_music": plan["non_diegetic_music"], "segments": segments,
+            "motionSegments": [], "audioSegments": []}
+
+
+def compile_fallback(story, state):
     count = _resolve_segment_count(state.get("segment_count", 4))
-    parts = [p.strip() for p in re.split(r"\n+|(?<=[。.!！？?])\s*", story or "") if p.strip()]
+    parts = [part.strip() for part in re.split(r"\n+|(?<=[。.!！？?])\s*", story or "") if part.strip()]
     parts = (parts or ["故事中的关键情节"]) + [parts[-1] if parts else "故事中的关键情节"] * count
-    preference = state.get("preference", "")
-    blocks = []
-    for index, part in enumerate(parts[:count], 1):
-        h3 = (f"subject_definitions: {part}\nsummary: {part}\nretention_analysis: 保持主体与空间连续\n"
-              f"detailed_description: {part}，动作连续可拍摄。\noverall_soundscape: 环境声与动作声\n"
-              f"non_diegetic_music: N/A\n{preference}").strip()
-        blocks.append(f"[SHOT_START]\n===H3_PROMPT===\n{h3}\n===SCENE_INSTRUCTION===\n{{\"slots\": []}}\n"
-                      f"===VIDEO_INSTRUCTION===\n{{\"slots\": []}}\n===AUDIO_INSTRUCTION===\n{{\"slots\": []}}\n[SHOT_END]")
-    return "\n\n".join(blocks)
-
-
-def normalize_schedule_sections(script: str) -> str:
-    """Add empty scheduling sections when the LLM returns a valid H3 body without them."""
-    def normalize(match):
-        shot = match.group(1).strip()
-        marker_names = ("H3_PROMPT", "SCENE_INSTRUCTION", "VIDEO_INSTRUCTION", "AUDIO_INSTRUCTION")
-        for name in marker_names:
-            shot = re.sub(rf"(?im)^\s*(?:#+\s*)?=*[\s`*_]*{name}[\s`*_]*=*\s*$", f"==={name}===", shot)
-        if "===H3_PROMPT===" not in shot:
-            shot = f"===H3_PROMPT===\n{shot}"
-        sections = []
-        for marker in ("===SCENE_INSTRUCTION===", "===VIDEO_INSTRUCTION===", "===AUDIO_INSTRUCTION==="):
-            if marker not in shot:
-                sections.append(f"{marker}\n{{\"slots\": []}}")
-        if sections:
-            shot = f"{shot}\n" + "\n".join(sections)
-        return f"[SHOT_START]\n{shot}\n[SHOT_END]"
-
-    return re.sub(r"\[SHOT_START\](.*?)\[SHOT_END\]", normalize, str(script or ""), flags=re.DOTALL)
-
-
-def validate_script(script: str, expected_count: int | None = None) -> str:
-    text = str(script or "").strip()
-    shots = re.findall(r"\[SHOT_START\](.*?)\[SHOT_END\]", text, re.DOTALL)
-    if not text or not shots or "===H3_PROMPT===" not in text:
-        raise ValueError("必须输出完整 H3 剧本块（[SHOT_START]...[SHOT_END]）")
-    if expected_count is not None and len(shots) != int(expected_count):
-        raise ValueError(f"分段数量应为 {expected_count}，实际为 {len(shots)}")
-    required_sections = ("===H3_PROMPT===", "===SCENE_INSTRUCTION===", "===VIDEO_INSTRUCTION===", "===AUDIO_INSTRUCTION===")
-    required_fields = ("subject_definitions:", "summary:", "retention_analysis:", "detailed_description:", "overall_soundscape:", "non_diegetic_music:")
-    for index, shot in enumerate(shots, 1):
-        if any(section not in shot for section in required_sections):
-            raise ValueError(f"第 {index} 段缺少 H3 或调度区块")
-        h3 = shot.split("===H3_PROMPT===", 1)[1].split("===SCENE_INSTRUCTION===", 1)[0]
-        if any(field not in h3 for field in required_fields):
-            raise ValueError(f"第 {index} 段缺少 H3 六段字段")
-    return text
+    return {"global_prompt": "保持整体视觉风格、角色身份、服饰与场景连续一致。",
+            "overall_soundscape": "环境声与动作声随画面连续变化。", "non_diegetic_music": "N/A",
+            "segments": [{"prompt": part} for part in parts[:count]]}
 
 
 class StoryDirector:
@@ -279,8 +281,8 @@ class StoryDirector:
             "llm_mmproj": (mmproj_models,),
         }}
 
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("H3完整剧本", "素材目录 JSON")
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("总提示词", "MiniMaxH3 Director 时间线 JSON", "素材目录 JSON")
     FUNCTION = "direct"
     CATEGORY = "StoryDirector"
     OUTPUT_NODE = True
@@ -293,27 +295,27 @@ class StoryDirector:
         count = _resolve_segment_count(segment_count)
         catalog = json.dumps(mature_catalog(state["assets"]), ensure_ascii=False, indent=2)
         if str(prompt_override or "").strip():
-            script = validate_script(prompt_override, count)
-            _save_last_processed_script(script, state)
-            return script, catalog
+            plan = apply_reference_contract(validate_director_plan(prompt_override, count), state["assets"])
+            timeline_data = json.dumps(build_timeline_data(plan, segment_duration), ensure_ascii=False, indent=2)
+            _save_last_processed_script(plan["global_prompt"], timeline_data, state)
+            return plan["global_prompt"], timeline_data, catalog
         if mode == "离线预览":
-            script = validate_script(compile_fallback(story, state), count)
-            _save_last_processed_script(script, state)
-            return script, catalog
+            plan = apply_reference_contract(validate_director_plan(compile_fallback(story, state), count), state["assets"])
+            timeline_data = json.dumps(build_timeline_data(plan, segment_duration), ensure_ascii=False, indent=2)
+            _save_last_processed_script(plan["global_prompt"], timeline_data, state)
+            return plan["global_prompt"], timeline_data, catalog
         if not llm_model or llm_model.startswith("未选择"):
             raise ValueError("拆解/生成模式必须选择 Qwen3.5 GGUF")
         if not llm_mmproj or llm_mmproj.startswith("未选择"):
             raise ValueError("拆解/生成模式必须选择 Qwen3.5 mmproj GGUF")
-        image_intro, video_intro, audio_intro = _material_intros(state["assets"])
-        system = build_shot_prompt(story, mode=mode, story_style=story_style, segment_count_label=segment_count,
-                                   lang="zh" if "ZH" in prompt_lang else "en", segment_duration=segment_duration,
-                                   ref_image_intro=image_intro, ref_video_intro=video_intro, ref_audio_intro=audio_intro,
-                                   preference=preference, custom_rules=custom_rules)
-        user = f"请严格输出恰好 {count} 个 [SHOT_START]...[SHOT_END] 完整 H3 分段，不要解释。"
+        system = build_director_prompt(story, mode, story_style, segment_count,
+                                       "zh" if "ZH" in prompt_lang else "en", segment_duration,
+                                       state["assets"], preference, custom_rules)
+        user = f"输出恰好 {count} 个分镜的 Director JSON。" + ("镜头细节必须充分。" if enhance else "")
         config = {"model": llm_model, "mmproj": llm_mmproj, "n_ctx": context_size, "n_gpu_layers": gpu_layers}
         params = {"max_tokens": max_tokens, "temperature": temperature, "top_k": top_k, "top_p": top_p,
                   "min_p": min_p, "repeat_penalty": repeat_penalty}
-        print(f"[StoryDirector] 准备生成 {count} 个 H3 分段，模式={mode}，风格={story_style}，启用素材={len([a for a in state['assets'] if a.get('enabled', True)])}", flush=True)
+        print(f"[StoryDirector] 准备生成 Director 总提示词和 {count} 个分镜，模式={mode}，风格={story_style}，启用素材={len([a for a in state['assets'] if a.get('enabled', True)])}", flush=True)
         try:
             import folder_paths
             input_root = folder_paths.get_input_directory()
@@ -322,22 +324,11 @@ class StoryDirector:
         except (ImportError, KeyError):
             image_paths = []
         result = LLAMA.complete(config, system, user, seed=seed, image_paths=image_paths, **params)
-        _save_last_processed_script(result, state)
-        print(f"[StoryDirector] 原始模型输出已保存：{_last_processed_file()}", flush=True)
-        print("[StoryDirector] 正在校验 H3 分段结构", flush=True)
-        normalized = normalize_schedule_sections(result)
-        if normalized != result:
-            print("[StoryDirector] 模型遗漏了部分调度区块，已补为空 slots 并保留 H3 内容", flush=True)
-        script = validate_script(normalized)
-        actual_count = len(re.findall(r"\[SHOT_START\]", script))
-        if actual_count != count:
-            print(f"[StoryDirector] 警告：要求 {count} 个分段，模型实际返回 {actual_count} 个；保留完整结果，避免丢失剧情", flush=True)
-        if enhance:
-            print(f"[StoryDirector] 开始二次增强 {actual_count} 个分段", flush=True)
-            script = validate_script(enhance_script(script, config, story_style, segment_duration,
-                                                    prompt_lang, preference, custom_rules, seed, image_paths))
-        _save_last_processed_script(script, state)
-        return script, catalog
+        plan = apply_reference_contract(validate_director_plan(result, count), state["assets"])
+        timeline_data = json.dumps(build_timeline_data(plan, segment_duration), ensure_ascii=False, indent=2)
+        _save_last_processed_script(plan["global_prompt"], timeline_data, state)
+        print(f"[StoryDirector] Director 结果已保存：{_last_processed_file()}", flush=True)
+        return plan["global_prompt"], timeline_data, catalog
 
 
 NODE_CLASS_MAPPINGS = {"StoryDirector": StoryDirector}

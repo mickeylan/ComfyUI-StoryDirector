@@ -1,10 +1,9 @@
 import importlib.util
 import json
 import pathlib
-import re
 import sys
-import types
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -21,118 +20,92 @@ SPEC.loader.exec_module(NODES)
 class StoryDirectorTests(unittest.TestCase):
     def test_filename_and_asset_containment(self):
         self.assertEqual(NODES.normalize_filename("../bad name?.png"), "bad_name.png")
-        assets = NODES.normalize_assets([{"path": "story_director/hero.png", "role": "角色"}])
-        self.assertEqual(assets[0]["role"], "角色")
         self.assertEqual(NODES.normalize_assets([{"path": "../secret.png"}]), [])
 
     def test_mature_catalog_round_trip(self):
         catalog = NODES.mature_catalog({"images": [{"path": "story_director/hero.png", "type": "角色", "name": "hero"}],
                                         "videos": [{"path": "story_director/ref.mp4", "name": "ref"}]})
-        self.assertEqual([a["name"] for a in catalog["images"]], ["hero"])
+        self.assertEqual(catalog["images"][0]["name"], "hero")
         self.assertEqual(catalog["videos"][0]["type"], "主体")
 
-    def test_fallback_uses_h3_block_contract(self):
-        state = {"segment_count": "2", "preference": "推镜"}
-        prompt = NODES.compile_fallback("门打开。有人走入。", state)
-        self.assertEqual(len(prompt.split("[SHOT_START]")) - 1, 2)
-        self.assertIn("===H3_PROMPT===", prompt)
-        self.assertIn("===AUDIO_INSTRUCTION===", prompt)
-        self.assertEqual(NODES.validate_script(prompt, 2), prompt)
+    def test_director_plan_validation(self):
+        value = {"global_prompt": "subject_definitions:\n<Subject 1> 是 <Picture 1> 中的女主。",
+                 "overall_soundscape": "风声", "non_diegetic_music": "N/A",
+                 "segments": [{"prompt": "女主向前走。"}, {"prompt": "镜头跟随她。"}]}
+        self.assertEqual(NODES.validate_director_plan(value, 2), value)
 
-    def test_generated_script_can_preserve_extra_complete_segments(self):
-        script = NODES.compile_fallback("一。二。三。四。五。六。", {"segment_count": "6"})
-        self.assertEqual(NODES.validate_script(script), script)
+    def test_director_plan_rejects_repeated_global_fields(self):
+        value = {"global_prompt": "风格", "overall_soundscape": "风声",
+                 "segments": [{"prompt": "subject_definitions: 重复"}]}
+        with self.assertRaisesRegex(ValueError, "重复了全局字段"):
+            NODES.validate_director_plan(value, 1)
 
-    def test_missing_schedule_sections_are_normalized(self):
-        script = NODES.compile_fallback("门打开。", {"segment_count": "1"})
-        incomplete = script.split("===SCENE_INSTRUCTION===", 1)[0] + "[SHOT_END]"
-        normalized = NODES.normalize_schedule_sections(incomplete)
-        self.assertEqual(NODES.validate_script(normalized, 1), normalized)
-        self.assertIn('===SCENE_INSTRUCTION===\n{"slots": []}', normalized)
-        self.assertIn('===VIDEO_INSTRUCTION===\n{"slots": []}', normalized)
-        self.assertIn('===AUDIO_INSTRUCTION===\n{"slots": []}', normalized)
+    def test_extracts_json_from_model_wrappers(self):
+        raw = '<think>ignore</think>\n```json\n{"global_prompt":"风格","overall_soundscape":"风声","segments":[{"prompt":"动作"}]}\n```'
+        self.assertEqual(NODES.validate_director_plan(raw, 1)["segments"][0]["prompt"], "动作")
 
-    def test_all_missing_section_markers_are_normalized(self):
-        script = NODES.compile_fallback("门打开。", {"segment_count": "1"})
-        body = script.split("===H3_PROMPT===\n", 1)[1].split("===SCENE_INSTRUCTION===", 1)[0].strip()
-        normalized = NODES.normalize_schedule_sections(f"[SHOT_START]\n{body}\n[SHOT_END]")
-        self.assertEqual(NODES.validate_script(normalized, 1), normalized)
-
-    def test_markdown_and_missing_h3_markers_are_normalized(self):
-        script = NODES.compile_fallback("门打开。", {"segment_count": "1"})
-        markdown = script.replace("===H3_PROMPT===", "### H3_PROMPT").replace("===SCENE_INSTRUCTION===", "**SCENE_INSTRUCTION**")
-        normalized = NODES.normalize_schedule_sections(markdown)
-        self.assertEqual(NODES.validate_script(normalized, 1), normalized)
-        unmarked = script.replace("===H3_PROMPT===\n", "")
-        self.assertEqual(NODES.validate_script(NODES.normalize_schedule_sections(unmarked), 1), NODES.normalize_schedule_sections(unmarked))
-
-    def test_validation_rejects_incomplete_script(self):
-        with self.assertRaises(ValueError):
-            NODES.validate_script("[SHOT_START]\n===H3_PROMPT===\npartial", 1)
-        valid = NODES.compile_fallback("门打开。", {"segment_count": "1"})
-        with self.assertRaises(ValueError):
-            NODES.validate_script(valid.replace("overall_soundscape:", "soundscape:"), 1)
-
-    def test_uploaded_assets_get_semantic_defaults(self):
+    def test_reference_contract_uses_enabled_image_order(self):
+        plan = {"global_prompt": "古风", "overall_soundscape": "风声", "non_diegetic_music": "N/A", "segments": [{"prompt": "动作"}]}
         assets = NODES.normalize_assets([
-            {"path": "story_director/hero.png", "type": "image"},
-            {"path": "story_director/move.mp4", "type": "video"},
-            {"path": "story_director/voice.wav", "type": "audio"},
+            {"path": "story_director/a.png", "type": "image", "name": "女主"},
+            {"path": "story_director/off.png", "type": "image", "name": "禁用", "enabled": False},
+            {"path": "story_director/b.png", "type": "image", "name": "男主"},
         ])
-        self.assertEqual([asset["role"] for asset in assets], ["角色", "主体", "音色"])
-        self.assertEqual([asset["name"] for asset in assets], ["hero", "move", "voice"])
+        result = NODES.apply_reference_contract(plan, assets)["global_prompt"]
+        self.assertIn("<Subject 1> is 女主 shown in <Picture 1>", result)
+        self.assertIn("<Subject 2> is 男主 shown in <Picture 2>", result)
+        self.assertNotIn("禁用", result)
+        self.assertIn("retention_analysis:", result)
 
-    def test_material_intros_keep_media_groups(self):
+    def test_timeline_matches_minimax_director_schema(self):
+        plan = {"global_prompt": "风格", "overall_soundscape": "风声", "non_diegetic_music": "N/A",
+                "segments": [{"prompt": "第一镜"}, {"prompt": "第二镜"}]}
+        timeline = NODES.build_timeline_data(plan, 5)
+        self.assertEqual(timeline["reference_mode"], "REF2VA")
+        self.assertEqual(timeline["prompt_format"], "minimax")
+        self.assertEqual([(x["start"], x["length"]) for x in timeline["segments"]], [(0, 120), (120, 120)])
+        self.assertEqual([x["prompt"] for x in timeline["segments"]], ["第一镜", "第二镜"])
+
+    def test_material_numbering_uses_enabled_media_order(self):
         assets = NODES.normalize_assets([
-            {"path": "story_director/hero.png", "type": "image", "role": "角色", "name": "女主", "description": "红衣"},
-            {"path": "story_director/move.mp4", "type": "video", "name": "追逐运镜"},
-            {"path": "story_director/voice.wav", "type": "audio", "name": "女主音色"},
+            {"path": "story_director/a.png", "type": "image", "name": "女主"},
+            {"path": "story_director/off.png", "type": "image", "name": "禁用", "enabled": False},
+            {"path": "story_director/b.png", "type": "image", "name": "男主"},
         ])
-        image, video, audio = NODES._material_intros(assets)
-        self.assertIn("角色A = 女主", image)
-        self.assertIn("视频A = 追逐运镜", video)
-        self.assertIn("音频A = 女主音色", audio)
+        prompt = NODES.build_director_prompt("相遇", "拆解模式 (Decompose)", "古风武侠", "4段", "zh", 5, assets)
+        self.assertIn("<Picture 1>: 女主", prompt)
+        self.assertIn("<Picture 2>: 男主", prompt)
+        self.assertNotIn("禁用", prompt)
 
-    def test_enhancer_replaces_only_detail(self):
-        block = NODES.compile_fallback("门打开。", {"segment_count": "1"})
-        changed = NODES._replace_detailed_description(block, "新的镜头描述")
-        self.assertIn("detailed_description: 新的镜头描述", changed)
-        self.assertIn("overall_soundscape: 环境声与动作声", changed)
-
-    def test_last_processed_script_is_recoverable(self):
+    def test_last_processed_director_data_is_recoverable(self):
         with tempfile.TemporaryDirectory() as directory:
             target = pathlib.Path(directory) / "last.json"
             with mock.patch.object(NODES, "_last_processed_file", return_value=str(target)):
-                NODES._save_last_processed_script("script", {"assets": []})
-                self.assertEqual(NODES.load_last_processed_script()["script"], "script")
+                NODES._save_last_processed_script("总提示词", '{"segments":[]}', {"assets": []})
+                result = NODES.load_last_processed_script()
+        self.assertEqual(result["global_prompt"], "总提示词")
 
-    def test_full_story_style_catalog_is_exposed(self):
-        expected = {"热血战斗", "悬疑推理", "温馨日常", "奇幻冒险", "科幻未来", "古风武侠", "都市情感", "恐怖惊悚", "末日废土", "黑色电影", "校园青春", "历史权谋", "修仙问道", "逆袭打脸", "歌神舞台", "穿越重生", "霸总甜宠", "乡村喜剧", "谍战风云"}
-        styles = NODES.StoryDirector.INPUT_TYPES()["required"]["story_style"][0]
-        self.assertEqual(set(styles), expected)
-        self.assertEqual(len(styles), 19)
-
-    def test_only_one_node_is_registered(self):
-        self.assertEqual(list(NODES.NODE_CLASS_MAPPINGS), ["StoryDirector"])
-        self.assertTrue(NODES.StoryDirector.OUTPUT_NODE)
+    def test_node_contract_preserves_input_order(self):
         schema = NODES.StoryDirector.INPUT_TYPES()
-        self.assertIn("director_state", schema["required"])
         self.assertEqual(list(schema["required"])[-2:], ["director_state", "llm_mmproj"])
-        self.assertNotIn("hidden", schema)
+        self.assertEqual(NODES.StoryDirector.RETURN_NAMES,
+                         ("总提示词", "MiniMaxH3 Director 时间线 JSON", "素材目录 JSON"))
+        self.assertEqual(list(NODES.NODE_CLASS_MAPPINGS), ["StoryDirector"])
 
     def test_offline_node_execution(self):
         with tempfile.TemporaryDirectory() as directory:
             target = pathlib.Path(directory) / "last.json"
             with mock.patch.object(NODES, "_last_processed_file", return_value=str(target)):
-                script, catalog = NODES.StoryDirector().direct(
+                global_prompt, timeline_json, catalog = NODES.StoryDirector().direct(
                     story="门打开。侦探走入。", prompt_override="", mode="离线预览",
                     story_style="悬疑推理", segment_count="4段", segment_duration=5,
                     prompt_lang="中文 [ZH]", preference="推镜", custom_rules="", enhance=False,
-                    llm_model="未选择 Qwen3.5 GGUF", llm_mmproj="未选择 Qwen3.5 mmproj", context_size=32768, gpu_layers=-1,
-                    max_tokens=8192, temperature=0.6, top_k=40, top_p=0.9,
-                    min_p=0.05, repeat_penalty=1.05, seed=0,
+                    llm_model="未选择 Qwen3.5 GGUF", llm_mmproj="未选择 Qwen3.5 mmproj",
+                    context_size=32768, gpu_layers=-1, max_tokens=8192, temperature=0.6,
+                    top_k=40, top_p=0.9, min_p=0.05, repeat_penalty=1.05, seed=0,
                     director_state='{"assets": []}')
-        self.assertEqual(len(re.findall(r"\[SHOT_START\]", script)), 4)
+        self.assertTrue(global_prompt)
+        self.assertEqual(len(json.loads(timeline_json)["segments"]), 4)
         self.assertEqual(json.loads(catalog), {"images": [], "videos": [], "audios": []})
 
 
