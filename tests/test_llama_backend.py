@@ -26,6 +26,9 @@ class BackendDispatchTests(unittest.TestCase):
              mock.patch.object(BACKEND.subprocess, "Popen", return_value=process) as popen:
             self.assertEqual(backend.complete({}, "system", "user"), "ok")
         self.assertTrue(popen.call_args.args[0][1].endswith("qwen35_worker.py"))
+        request = json.loads(process.communicate.call_args.args[0].decode("ascii"))
+        self.assertNotIn("mtp", request)
+        self.assertNotIn("cpu_moe", request)
 
     def test_qwen38_uses_separate_worker(self):
         backend = BACKEND.LocalLlama()
@@ -33,8 +36,13 @@ class BackendDispatchTests(unittest.TestCase):
         process.communicate.return_value = (b'STORYDIRECTOR_RESULT={"text":"ok"}\n', b"")
         with mock.patch.object(backend, "_paths", return_value=("Qwen3.8.gguf", "mmproj-Qwen3.8.gguf")), \
              mock.patch.object(BACKEND.subprocess, "Popen", return_value=process) as popen:
-            self.assertEqual(backend.complete({}, "system", "user"), "ok")
+            self.assertEqual(backend.complete({"qwen38": {"mtp": True, "mtp_draft_tokens": 4,
+                                                            "reasoning_effort": "medium", "n_cpu_moe": 6}},
+                                              "system", "user"), "ok")
         self.assertTrue(popen.call_args.args[0][1].endswith("qwen38_worker.py"))
+        request = json.loads(process.communicate.call_args.args[0].decode("ascii"))
+        self.assertEqual((request["mtp"], request["mtp_draft_tokens"], request["reasoning_effort"],
+                          request["cpu_moe"], request["n_cpu_moe"]), (True, 4, "medium", False, 6))
 
     def test_mixed_model_and_projector_are_rejected(self):
         backend = BACKEND.LocalLlama()

@@ -47,6 +47,13 @@ class LocalLlama:
             "image_paths": list(image_paths),
             "params": options,
         }
+        if family == "qwen3.8":
+            qwen38 = config.get("qwen38", {})
+            request.update({"mtp": bool(qwen38.get("mtp", True)),
+                            "mtp_draft_tokens": int(qwen38.get("mtp_draft_tokens", 2)),
+                            "reasoning_effort": str(qwen38.get("reasoning_effort", "xhigh")),
+                            "cpu_moe": bool(qwen38.get("cpu_moe", False)),
+                            "n_cpu_moe": int(qwen38.get("n_cpu_moe", 0))})
         print(f"[StoryDirector] 启动独立 {family.replace('qwen', 'Qwen')} 进程：{os.path.basename(model_path)}", flush=True)
         print(f"[StoryDirector] 提交 {len(image_paths)} 张参考图，最大输出 {options.get('max_tokens', '默认')} tokens", flush=True)
         worker = os.path.join(os.path.dirname(__file__), "qwen38_worker.py" if family == "qwen3.8" else "qwen35_worker.py")

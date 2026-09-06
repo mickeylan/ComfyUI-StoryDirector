@@ -343,7 +343,8 @@ class StoryDirector:
                                        "zh" if "ZH" in prompt_lang else "en", segment_duration,
                                        state["assets"], preference, custom_rules)
         user = f"输出恰好 {count} 个分镜的 Director JSON。" + ("镜头细节必须充分。" if enhance else "")
-        config = {"model": llm_model, "mmproj": llm_mmproj, "n_ctx": context_size, "n_gpu_layers": gpu_layers}
+        config = {"model": llm_model, "mmproj": llm_mmproj, "n_ctx": context_size, "n_gpu_layers": gpu_layers,
+                  "qwen38": state.get("qwen38", {})}
         params = {"max_tokens": max_tokens, "temperature": temperature, "top_k": top_k, "top_p": top_p,
                   "min_p": min_p, "repeat_penalty": repeat_penalty}
         print(f"[StoryDirector] 准备生成 Director 总提示词和 {count} 个分镜，模式={mode}，风格={story_style}，启用素材={len([a for a in state['assets'] if a.get('enabled', True)])}", flush=True)
