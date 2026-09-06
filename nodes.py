@@ -280,12 +280,12 @@ class StoryDirector:
         try:
             import folder_paths
             files = [name for name in folder_paths.get_filename_list("LLM") if name.lower().endswith(".gguf")]
-            qwen35 = [name for name in files if "qwen3.5" in name.lower() or "qwen35" in name.lower()]
-            models = [name for name in qwen35 if "mmproj" not in os.path.basename(name).lower()] or ["未选择 Qwen3.5 GGUF"]
-            mmproj_models = [name for name in qwen35 if "mmproj" in os.path.basename(name).lower()] or ["未选择 Qwen3.5 mmproj"]
+            supported = [name for name in files if any(marker in name.lower() for marker in ("qwen3.5", "qwen35", "qwen3.8", "qwen38"))]
+            models = [name for name in supported if "mmproj" not in os.path.basename(name).lower()] or ["未选择 Qwen GGUF"]
+            mmproj_models = [name for name in supported if "mmproj" in os.path.basename(name).lower()] or ["未选择 Qwen mmproj"]
         except (ImportError, KeyError):
-            models = ["未选择 Qwen3.5 GGUF"]
-            mmproj_models = ["未选择 Qwen3.5 mmproj"]
+            models = ["未选择 Qwen GGUF"]
+            mmproj_models = ["未选择 Qwen mmproj"]
         return {"required": {
             "story": ("STRING", {"default": "", "multiline": True}),
             "prompt_override": ("STRING", {"default": "", "multiline": True}),
@@ -336,9 +336,9 @@ class StoryDirector:
             _save_last_processed_script(plan["global_prompt"], timeline_data, state)
             return plan["global_prompt"], timeline_data, catalog, reference_images
         if not llm_model or llm_model.startswith("未选择"):
-            raise ValueError("拆解/生成模式必须选择 Qwen3.5 GGUF")
+            raise ValueError("拆解/生成模式必须选择 Qwen3.5 或 Qwen3.8 GGUF")
         if not llm_mmproj or llm_mmproj.startswith("未选择"):
-            raise ValueError("拆解/生成模式必须选择 Qwen3.5 mmproj GGUF")
+            raise ValueError("拆解/生成模式必须选择配套的 Qwen mmproj GGUF")
         system = build_director_prompt(story, mode, story_style, segment_count,
                                        "zh" if "ZH" in prompt_lang else "en", segment_duration,
                                        state["assets"], preference, custom_rules)
