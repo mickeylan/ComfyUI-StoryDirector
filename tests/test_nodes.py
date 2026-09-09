@@ -46,6 +46,18 @@ class StoryDirectorTests(unittest.TestCase):
         raw = '<think>ignore</think>\n```json\n{"global_prompt":"风格","overall_soundscape":"风声","segments":[{"prompt":"动作"}]}\n```'
         self.assertEqual(NODES.validate_director_plan(raw, 1)["segments"][0]["prompt"], "动作")
 
+    def test_only_explicitly_mentioned_assets_are_used(self):
+        assets = NODES.normalize_assets([
+            {"path": "story_director/a.png", "type": "image", "name": "女主"},
+            {"path": "story_director/b.png", "type": "image", "name": "男主"},
+            {"path": "story_director/c.png", "type": "image", "name": "女"},
+        ])
+        selected = NODES.referenced_assets("@女主 走进房间，男主在门外。", assets)
+        self.assertEqual([asset["name"] for asset in selected], ["女主"])
+        self.assertEqual(NODES.referenced_assets("没有引用任何素材", assets), [])
+        saved = NODES.referenced_assets("浏览器未保留标记", assets, ["女主", "男主"])
+        self.assertEqual([asset["name"] for asset in saved], ["女主", "男主"])
+
     def test_reference_contract_uses_enabled_image_order(self):
         plan = {"global_prompt": "古风", "overall_soundscape": "风声", "non_diegetic_music": "N/A", "segments": [{"prompt": "动作"}]}
         assets = NODES.normalize_assets([
@@ -109,6 +121,21 @@ class StoryDirectorTests(unittest.TestCase):
         self.assertEqual(tuple(images.shape), (2, 100, 200, 3))
         self.assertGreater(float(images[0, 50, 100, 0]), 0.99)
         self.assertGreater(float(images[1, 50, 100, 1]), 0.99)
+
+    def test_segment_count_allows_every_value_from_one_to_48(self):
+        self.assertEqual(list(NODES.SEGMENT_COUNT_OPTIONS.values()), list(range(1, 49)))
+        self.assertEqual(NODES._resolve_segment_count("1段"), 1)
+        self.assertEqual(NODES._resolve_segment_count("2"), 2)
+        self.assertEqual(NODES._resolve_segment_count(37), 37)
+
+    def test_segment_duration_is_not_limited_to_15_seconds(self):
+        schema = NODES.StoryDirector.INPUT_TYPES()
+        duration = schema["required"]["segment_duration"][1]
+        self.assertGreater(duration["max"], 15)
+        timeline = NODES.build_timeline_data({"global_prompt": "x", "overall_soundscape": "x",
+                                               "non_diegetic_music": "N/A",
+                                               "segments": [{"prompt": "long take"}]}, 60)
+        self.assertEqual(timeline["normalDurationFrames"], 1440)
 
     def test_node_contract_preserves_input_order(self):
         schema = NODES.StoryDirector.INPUT_TYPES()

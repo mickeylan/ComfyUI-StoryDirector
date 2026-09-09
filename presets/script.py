@@ -68,29 +68,18 @@ STORY_STYLES = {
 #  零件库 3: {Shot_Count} — 故事长度选项
 # ═══════════════════════════════════════════════════════════════
 
-SEGMENT_COUNT_OPTIONS = {
-    "4段": 4,
-    "6段": 6,
-    "9段": 9,
-    "12段": 12,
-    "16段": 16,
-    "20段": 20,
-    "24段": 24,
-}
+SEGMENT_COUNT_OPTIONS = {f"{count}段": count for count in range(1, 49)}
 
 
 def _resolve_segment_count(label):
-    """分段数解析：标准标签（「6段」）→ SEGMENT_COUNT_OPTIONS；数字字符串（「6」/「1」）→ 精确整数；否则 4。
-
-    管理器把 video_count 的任意 1-48 精确传给剧本处理器（不限于 4/6/9/12/16/20/24）。
-    """
+    """Resolve an advertised label or an exact user-entered count from 1 through 48."""
     if isinstance(label, str) and label in SEGMENT_COUNT_OPTIONS:
         return SEGMENT_COUNT_OPTIONS[label]
     if isinstance(label, str) and label.strip().isdigit():
         return max(1, min(48, int(label.strip())))
     if isinstance(label, (int, float)):
         return max(1, min(48, int(label)))
-    return 4
+    return 1
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -250,7 +239,7 @@ def build_shot_prompt(
     mode_instruction = _mi.get(mode, list(_mi.values())[0] if _mi else "")
     style = _ss.get(story_style, list(_ss.values())[0] if _ss else "")
     segment_count = _resolve_segment_count(segment_count_label)
-    segment_duration = max(4, min(15, int(segment_duration or 8)))
+    segment_duration = max(1, int(segment_duration or 8))
 
     schedule_rules = _build_schedule_rules(lang, enable_scene, enable_props, enable_video, enable_audio)
 

@@ -152,6 +152,19 @@ def _state(value) -> dict:
     return parsed
 
 
+def referenced_assets(story, assets, references=()):
+    text = str(story or "")
+    saved = {str(name).strip() for name in references if str(name).strip()}
+    result = []
+    for asset in assets:
+        if not asset.get("enabled", True):
+            continue
+        name = str(asset.get("reference_name") or asset.get("name") or "").strip()
+        if name and (name in saved or re.search(rf"(?<![\w@])@{re.escape(name)}(?![\w])", text, re.UNICODE)):
+            result.append(asset)
+    return result
+
+
 def load_reference_images(assets):
     import folder_paths
 
@@ -292,7 +305,7 @@ class StoryDirector:
             "mode": (["拆解模式 (Decompose)", "生成模式 (Generate)", "离线预览"],),
             "story_style": (list(STORY_STYLES),),
             "segment_count": (list(SEGMENT_COUNT_OPTIONS),),
-            "segment_duration": ("INT", {"default": 8, "min": 4, "max": 15}),
+            "segment_duration": ("INT", {"default": 8, "min": 1, "max": 86400}),
             "prompt_lang": (["中文 [ZH]", "英文 [EN]"],),
             "preference": ("STRING", {"default": "", "multiline": True}),
             "custom_rules": ("STRING", {"default": "", "multiline": True}),
@@ -324,14 +337,15 @@ class StoryDirector:
         state.update({"segment_count": segment_count, "segment_duration": segment_duration, "preference": preference})
         count = _resolve_segment_count(segment_count)
         catalog = json.dumps(mature_catalog(state["assets"]), ensure_ascii=False, indent=2)
-        reference_images = load_reference_images(state["assets"])
+        active_assets = referenced_assets(story, state["assets"], state.get("asset_references", ()))
+        reference_images = load_reference_images(active_assets)
         if str(prompt_override or "").strip():
-            plan = apply_reference_contract(validate_director_plan(prompt_override, count), state["assets"])
+            plan = apply_reference_contract(validate_director_plan(prompt_override, count), active_assets)
             timeline_data = json.dumps(build_timeline_data(plan, segment_duration), ensure_ascii=False, indent=2)
             _save_last_processed_script(plan["global_prompt"], timeline_data, state)
             return plan["global_prompt"], timeline_data, catalog, reference_images
         if mode == "离线预览":
-            plan = apply_reference_contract(validate_director_plan(compile_fallback(story, state), count), state["assets"])
+            plan = apply_reference_contract(validate_director_plan(compile_fallback(story, state), count), active_assets)
             timeline_data = json.dumps(build_timeline_data(plan, segment_duration), ensure_ascii=False, indent=2)
             _save_last_processed_script(plan["global_prompt"], timeline_data, state)
             return plan["global_prompt"], timeline_data, catalog, reference_images
@@ -341,22 +355,22 @@ class StoryDirector:
             raise ValueError("拆解/生成模式必须选择配套的 Qwen mmproj GGUF")
         system = build_director_prompt(story, mode, story_style, segment_count,
                                        "zh" if "ZH" in prompt_lang else "en", segment_duration,
-                                       state["assets"], preference, custom_rules)
+                                       active_assets, preference, custom_rules)
         user = f"输出恰好 {count} 个分镜的 Director JSON。" + ("镜头细节必须充分。" if enhance else "")
         config = {"model": llm_model, "mmproj": llm_mmproj, "n_ctx": context_size, "n_gpu_layers": gpu_layers,
                   "qwen38": state.get("qwen38", {})}
         params = {"max_tokens": max_tokens, "temperature": temperature, "top_k": top_k, "top_p": top_p,
                   "min_p": min_p, "repeat_penalty": repeat_penalty}
-        print(f"[StoryDirector] 准备生成 Director 总提示词和 {count} 个分镜，模式={mode}，风格={story_style}，启用素材={len([a for a in state['assets'] if a.get('enabled', True)])}", flush=True)
+        print(f"[StoryDirector] 准备生成 Director 总提示词和 {count} 个分镜，模式={mode}，风格={story_style}，引用素材={len(active_assets)}", flush=True)
         try:
             import folder_paths
             input_root = folder_paths.get_input_directory()
             image_paths = [os.path.join(input_root, _safe_relative(asset["path"]).replace("/", os.sep))
-                           for asset in state["assets"] if asset.get("enabled", True) and asset["type"] == "image"]
+                           for asset in active_assets if asset["type"] == "image"]
         except (ImportError, KeyError):
             image_paths = []
         result = LLAMA.complete(config, system, user, seed=seed, image_paths=image_paths, **params)
-        plan = apply_reference_contract(validate_director_plan(result, count), state["assets"])
+        plan = apply_reference_contract(validate_director_plan(result, count), active_assets)
         timeline_data = json.dumps(build_timeline_data(plan, segment_duration), ensure_ascii=False, indent=2)
         _save_last_processed_script(plan["global_prompt"], timeline_data, state)
         print(f"[StoryDirector] Director 结果已保存：{_last_processed_file()}", flush=True)
