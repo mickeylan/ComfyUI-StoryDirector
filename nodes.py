@@ -18,6 +18,8 @@ from PIL import Image, ImageOps
 from .llama_backend import LLAMA
 from .presets.script import SEGMENT_COUNT_OPTIONS, build_director_prompt, _resolve_segment_count
 from .sheding.story_styles import STORY_STYLES
+from .skills import (SKILL_IDS, SKILL_OPTIONS_ZH, build_auto_skill_prompt, build_skill_system_prompt,
+                     compile as compile_h3, output_issues, parse_skill_selection, select_skill, skill_issues)
 
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"})
 VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".webm", ".mkv", ".avi"})
@@ -155,14 +157,17 @@ def _state(value) -> dict:
 def referenced_assets(story, assets, references=()):
     text = str(story or "")
     saved = {str(name).strip() for name in references if str(name).strip()}
-    result = []
-    for asset in assets:
-        if not asset.get("enabled", True):
+    enabled = [(str(asset.get("reference_name") or asset.get("name") or "").strip(), asset)
+               for asset in assets if asset.get("enabled", True)]
+    names = sorted((name for name, _asset in enabled if name), key=len, reverse=True)
+    mentioned = set(saved)
+    for index, character in enumerate(text):
+        if character != "@":
             continue
-        name = str(asset.get("reference_name") or asset.get("name") or "").strip()
-        if name and (name in saved or re.search(rf"(?<![\w@])@{re.escape(name)}(?![\w])", text, re.UNICODE)):
-            result.append(asset)
-    return result
+        name = next((name for name in names if text.startswith(name, index + 1)), None)
+        if name:
+            mentioned.add(name)
+    return [asset for name, asset in enabled if name in mentioned]
 
 
 def load_reference_images(assets):
@@ -244,8 +249,12 @@ def validate_director_plan(value, expected_count=None):
         prompts.append(prompt)
     if expected_count is not None and len(prompts) != int(expected_count):
         raise ValueError(f"分镜数量应为 {expected_count}，实际为 {len(prompts)}")
-    return {"global_prompt": global_prompt, "overall_soundscape": soundscape,
+    plan = {"global_prompt": global_prompt, "overall_soundscape": soundscape,
             "non_diegetic_music": music, "segments": [{"prompt": prompt} for prompt in prompts]}
+    if str(data.get("selected_skill") or "") in SKILL_IDS:
+        plan["selected_skill"] = data["selected_skill"]
+        plan["skill_selection_reason"] = str(data.get("skill_selection_reason") or "本地 Qwen 自动选择").strip()
+    return plan
 
 
 def apply_reference_contract(plan, assets):
@@ -264,7 +273,7 @@ def apply_reference_contract(plan, assets):
     return {**plan, "global_prompt": global_prompt}
 
 
-def build_timeline_data(plan, segment_duration, fps=24):
+def build_timeline_data(plan, segment_duration, fps=24, selected_skill="h3-prompt-writing", selection_reason=""):
     length = max(1, int(round(float(segment_duration) * fps)))
     segments = [{"id": f"story-director-{index + 1}", "start": index * length,
                  "length": length, "prompt": item["prompt"], "type": "text", "isEndFrame": False}
@@ -274,7 +283,8 @@ def build_timeline_data(plan, segment_duration, fps=24):
             "reference_mode": "REF2VA", "prompt_format": "minimax", "frame_rate": fps,
             "normalStartFrame": 0, "normalDurationFrames": total_frames,
             "global_prompt": plan["global_prompt"], "overall_soundscape": plan["overall_soundscape"],
-            "non_diegetic_music": plan["non_diegetic_music"], "segments": segments,
+            "non_diegetic_music": plan["non_diegetic_music"], "selected_skill": selected_skill,
+            "skill_selection_reason": selection_reason, "segments": segments,
             "motionSegments": [], "audioSegments": []}
 
 
@@ -322,6 +332,7 @@ class StoryDirector:
             "seed": ("INT", {"default": 0, "min": 0, "max": 9223372036854775807}),
             "director_state": ("STRING", {"default": '{"assets": []}', "multiline": True}),
             "llm_mmproj": (mmproj_models,),
+            "director_skill": (list(SKILL_OPTIONS_ZH),),
         }}
 
     RETURN_TYPES = ("STRING", "STRING", "STRING", "IMAGE")
@@ -332,33 +343,39 @@ class StoryDirector:
 
     def direct(self, story, prompt_override, mode, story_style, segment_count, segment_duration, prompt_lang,
                preference, custom_rules, enhance, llm_model, llm_mmproj, context_size, gpu_layers, max_tokens,
-               temperature, top_k, top_p, min_p, repeat_penalty, seed, director_state):
+               temperature, top_k, top_p, min_p, repeat_penalty, seed, director_state, director_skill="自动选择"):
         state = _state(director_state)
         state.update({"segment_count": segment_count, "segment_duration": segment_duration, "preference": preference})
         count = _resolve_segment_count(segment_count)
         catalog = json.dumps(mature_catalog(state["assets"]), ensure_ascii=False, indent=2)
         active_assets = referenced_assets(story, state["assets"], state.get("asset_references", ()))
+        selected_skill, selection_reason = select_skill(director_skill, story, active_assets)
         reference_images = load_reference_images(active_assets)
         if str(prompt_override or "").strip():
             plan = apply_reference_contract(validate_director_plan(prompt_override, count), active_assets)
-            timeline_data = json.dumps(build_timeline_data(plan, segment_duration), ensure_ascii=False, indent=2)
+            timeline_data = json.dumps(build_timeline_data(plan, segment_duration, selected_skill=selected_skill,
+                                                           selection_reason=selection_reason), ensure_ascii=False, indent=2)
             _save_last_processed_script(plan["global_prompt"], timeline_data, state)
             return plan["global_prompt"], timeline_data, catalog, reference_images
         if mode == "离线预览":
             plan = apply_reference_contract(validate_director_plan(compile_fallback(story, state), count), active_assets)
-            timeline_data = json.dumps(build_timeline_data(plan, segment_duration), ensure_ascii=False, indent=2)
+            timeline_data = json.dumps(build_timeline_data(plan, segment_duration, selected_skill=selected_skill,
+                                                           selection_reason=selection_reason), ensure_ascii=False, indent=2)
             _save_last_processed_script(plan["global_prompt"], timeline_data, state)
             return plan["global_prompt"], timeline_data, catalog, reference_images
         if not llm_model or llm_model.startswith("未选择"):
             raise ValueError("拆解/生成模式必须选择 Qwen3.5 或 Qwen3.8 GGUF")
         if not llm_mmproj or llm_mmproj.startswith("未选择"):
             raise ValueError("拆解/生成模式必须选择配套的 Qwen mmproj GGUF")
-        system = build_director_prompt(story, mode, story_style, segment_count,
-                                       "zh" if "ZH" in prompt_lang else "en", segment_duration,
+        language = "zh" if "ZH" in prompt_lang else "en"
+        system = build_director_prompt(story, mode, story_style, segment_count, language, segment_duration,
                                        active_assets, preference, custom_rules)
+        system += "\n\n## 本次导演 Skill\n" + (build_auto_skill_prompt(language) if selected_skill == "auto"
+                                                        else build_skill_system_prompt(selected_skill, language))
         user = f"输出恰好 {count} 个分镜的 Director JSON。" + ("镜头细节必须充分。" if enhance else "")
         config = {"model": llm_model, "mmproj": llm_mmproj, "n_ctx": context_size, "n_gpu_layers": gpu_layers,
-                  "qwen38": state.get("qwen38", {})}
+                  "expected_count": count, "auto_skill": selected_skill == "auto", "selected_skill": selected_skill,
+                  "user_story": story, "enhance": enhance, "qwen38": state.get("qwen38", {})}
         params = {"max_tokens": max_tokens, "temperature": temperature, "top_k": top_k, "top_p": top_p,
                   "min_p": min_p, "repeat_penalty": repeat_penalty}
         print(f"[StoryDirector] 准备生成 Director 总提示词和 {count} 个分镜，模式={mode}，风格={story_style}，引用素材={len(active_assets)}", flush=True)
@@ -371,7 +388,16 @@ class StoryDirector:
             image_paths = []
         result = LLAMA.complete(config, system, user, seed=seed, image_paths=image_paths, **params)
         plan = apply_reference_contract(validate_director_plan(result, count), active_assets)
-        timeline_data = json.dumps(build_timeline_data(plan, segment_duration), ensure_ascii=False, indent=2)
+        if selected_skill == "auto":
+            selected_skill = parse_skill_selection(plan.get("selected_skill", ""))
+            selection_reason = plan.get("skill_selection_reason") or "本地 Qwen 自动选择"
+        asset_counts = {kind: sum(asset["type"] == kind for asset in active_assets) for kind in ("image", "video", "audio")}
+        issues = output_issues(compile_h3(plan, "ref2va", segment_duration), "ref2va", segment_duration, asset_counts)
+        issues.extend(skill_issues(selected_skill, plan, story))
+        if issues:
+            raise ValueError("H3 质量检查失败：" + "；".join(issues))
+        timeline_data = json.dumps(build_timeline_data(plan, segment_duration, selected_skill=selected_skill,
+                                                       selection_reason=selection_reason), ensure_ascii=False, indent=2)
         _save_last_processed_script(plan["global_prompt"], timeline_data, state)
         print(f"[StoryDirector] Director 结果已保存：{_last_processed_file()}", flush=True)
         return plan["global_prompt"], timeline_data, catalog, reference_images

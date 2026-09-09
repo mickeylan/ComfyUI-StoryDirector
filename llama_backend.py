@@ -8,6 +8,7 @@ import threading
 import time
 
 RESULT_PREFIX = "STORYDIRECTOR_RESULT="
+INFERENCE_LOCK = threading.Lock()
 
 
 def _qwen_family(path):
@@ -31,6 +32,15 @@ class LocalLlama:
         return model_path, mmproj_path
 
     def complete(self, config, system, user, seed=0, image_paths=(), **params):
+        with INFERENCE_LOCK:
+            try:
+                import comfy.model_management as model_management
+                model_management.unload_all_models()
+            except ImportError:
+                pass
+            return self._complete_locked(config, system, user, seed, image_paths, params)
+
+    def _complete_locked(self, config, system, user, seed, image_paths, params):
         model_path, mmproj_path = self._paths(config)
         family = _qwen_family(model_path)
         if _qwen_family(mmproj_path) != family:
@@ -41,9 +51,15 @@ class LocalLlama:
             "model_path": model_path,
             "mmproj_path": mmproj_path,
             "n_ctx": int(config.get("n_ctx", 65536)),
+            "n_gpu_layers": int(config.get("n_gpu_layers", -1)),
             "system": system,
             "user": user,
             "seed": int(seed),
+            "expected_count": int(config.get("expected_count", 1)),
+            "auto_skill": bool(config.get("auto_skill", False)),
+            "selected_skill": str(config.get("selected_skill", "")),
+            "user_story": str(config.get("user_story", "")),
+            "enhance": bool(config.get("enhance", False)),
             "image_paths": list(image_paths),
             "params": options,
         }
@@ -70,7 +86,19 @@ class LocalLlama:
         reporter = threading.Thread(target=heartbeat, daemon=True)
         reporter.start()
         try:
-            stdout_bytes, stderr_bytes = process.communicate(json.dumps(request, ensure_ascii=True).encode("ascii"))
+            try:
+                stdout_bytes, stderr_bytes = process.communicate(
+                    json.dumps(request, ensure_ascii=True).encode("ascii"),
+                    timeout=float(config.get("worker_timeout", 300)),
+                )
+            except subprocess.TimeoutExpired as exc:
+                process.terminate()
+                try:
+                    process.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                raise RuntimeError(f"{family.replace('qwen', 'Qwen')} 独立进程超时") from exc
             stdout = stdout_bytes.decode("utf-8", errors="replace")
             stderr = stderr_bytes.decode("utf-8", errors="replace")
         finally:

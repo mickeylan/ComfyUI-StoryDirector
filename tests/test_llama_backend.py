@@ -44,6 +44,28 @@ class BackendDispatchTests(unittest.TestCase):
         self.assertEqual((request["mtp"], request["mtp_draft_tokens"], request["reasoning_effort"],
                           request["cpu_moe"], request["n_cpu_moe"]), (True, 4, "medium", False, 6))
 
+    def test_worker_receives_runtime_settings(self):
+        backend = BACKEND.LocalLlama()
+        process = mock.Mock(returncode=0)
+        process.communicate.return_value = (b'STORYDIRECTOR_RESULT={"text":"ok"}\n', b"")
+        with mock.patch.object(backend, "_paths", return_value=("Qwen3.5.gguf", "mmproj-Qwen3.5.gguf")), \
+             mock.patch.object(BACKEND.subprocess, "Popen", return_value=process):
+            backend.complete({"n_ctx": 49152, "n_gpu_layers": 24, "worker_timeout": 123}, "system", "user")
+        request = json.loads(process.communicate.call_args.args[0].decode("ascii"))
+        self.assertEqual((request["n_ctx"], request["n_gpu_layers"]), (49152, 24))
+        self.assertEqual(process.communicate.call_args.kwargs["timeout"], 123)
+
+    def test_worker_timeout_terminates_process(self):
+        backend = BACKEND.LocalLlama()
+        process = mock.Mock()
+        process.communicate.side_effect = BACKEND.subprocess.TimeoutExpired("worker", 1)
+        with mock.patch.object(backend, "_paths", return_value=("Qwen3.5.gguf", "mmproj-Qwen3.5.gguf")), \
+             mock.patch.object(BACKEND.subprocess, "Popen", return_value=process):
+            with self.assertRaisesRegex(RuntimeError, "超时"):
+                backend.complete({"worker_timeout": 1}, "system", "user")
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=15)
+
     def test_mixed_model_and_projector_are_rejected(self):
         backend = BACKEND.LocalLlama()
         with mock.patch.object(backend, "_paths", return_value=("Qwen3.8.gguf", "mmproj-Qwen3.5.gguf")):

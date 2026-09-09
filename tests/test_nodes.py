@@ -55,6 +55,8 @@ class StoryDirectorTests(unittest.TestCase):
         selected = NODES.referenced_assets("@女主 走进房间，男主在门外。", assets)
         self.assertEqual([asset["name"] for asset in selected], ["女主"])
         self.assertEqual(NODES.referenced_assets("没有引用任何素材", assets), [])
+        adjacent = NODES.referenced_assets("@女主走进房间，@男主随后出现", assets)
+        self.assertEqual([asset["name"] for asset in adjacent], ["女主", "男主"])
         saved = NODES.referenced_assets("浏览器未保留标记", assets, ["女主", "男主"])
         self.assertEqual([asset["name"] for asset in saved], ["女主", "男主"])
 
@@ -139,7 +141,8 @@ class StoryDirectorTests(unittest.TestCase):
 
     def test_node_contract_preserves_input_order(self):
         schema = NODES.StoryDirector.INPUT_TYPES()
-        self.assertEqual(list(schema["required"])[-2:], ["director_state", "llm_mmproj"])
+        self.assertEqual(list(schema["required"])[-3:], ["director_state", "llm_mmproj", "director_skill"])
+        self.assertEqual(schema["required"]["director_skill"][0][0], "自动选择")
         self.assertEqual(NODES.StoryDirector.RETURN_NAMES,
                          ("总提示词", "MiniMaxH3 Director 时间线 JSON", "素材目录 JSON", "参考图片"))
         self.assertEqual(list(NODES.NODE_CLASS_MAPPINGS), ["StoryDirector"])
