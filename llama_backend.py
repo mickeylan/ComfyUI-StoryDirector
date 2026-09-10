@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 import threading
@@ -9,26 +10,63 @@ import time
 
 RESULT_PREFIX = "STORYDIRECTOR_RESULT="
 INFERENCE_LOCK = threading.Lock()
+_MODEL_ROOTS = ("LLM/GGUF", "llama_cpp")
+
+
+def local_qwen_files():
+    """Discover supported Qwen GGUF files without relying on an LLM folder registration."""
+    try:
+        import folder_paths
+        models_root = Path(folder_paths.models_dir).resolve()
+    except (ImportError, AttributeError):
+        return []
+    files = []
+    for relative_root in _MODEL_ROOTS:
+        root = (models_root / relative_root).resolve()
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.gguf"):
+            resolved = path.resolve()
+            if resolved.is_file() and resolved.is_relative_to(root):
+                relative = resolved.relative_to(models_root).as_posix()
+                normalized = relative.casefold().replace("-", "").replace("_", "")
+                if "qwen3.5" in normalized or "qwen35" in normalized or "qwen3.8" in normalized or "qwen38" in normalized:
+                    files.append(relative)
+    return sorted(set(files), key=str.casefold)
+
+
+def resolve_local_qwen_file(value):
+    """Resolve one discovered model-relative path and reject traversal/outside files."""
+    try:
+        import folder_paths
+        models_root = Path(folder_paths.models_dir).resolve()
+    except (ImportError, AttributeError) as error:
+        raise ValueError("无法读取 ComfyUI models 目录") from error
+    relative = Path(str(value or ""))
+    if relative.is_absolute() or ".." in relative.parts or "://" in str(value):
+        raise ValueError("Qwen 模型必须使用 ComfyUI models 目录中的相对路径")
+    path = (models_root / relative).resolve()
+    roots = tuple((models_root / item).resolve() for item in _MODEL_ROOTS)
+    if path.suffix.casefold() != ".gguf" or not path.is_file() or not any(path.is_relative_to(root) for root in roots):
+        raise ValueError(f"无效的本地 Qwen GGUF 文件：{value}")
+    return str(path)
 
 
 def _qwen_family(path):
-    name = os.path.basename(path).casefold().replace("-", "").replace("_", "")
+    name = str(path).casefold().replace("-", "").replace("_", "")
     return "qwen3.8" if "qwen38" in name or "qwen3.8" in name else "qwen3.5"
 
 
 class LocalLlama:
     def _paths(self, config):
-        try:
-            import folder_paths
-            model_path = folder_paths.get_full_path("LLM", config.get("model", ""))
-            mmproj_path = folder_paths.get_full_path("LLM", config.get("mmproj", ""))
-        except (ImportError, KeyError):
-            model_path = None
-            mmproj_path = None
-        if not model_path or not os.path.isfile(model_path) or os.path.splitext(model_path)[1].lower() != ".gguf":
-            raise ValueError("所选模型必须是 models/LLM 中列出的 Qwen3.5 GGUF 文件")
-        if not mmproj_path or not os.path.isfile(mmproj_path) or os.path.splitext(mmproj_path)[1].lower() != ".gguf":
-            raise ValueError("Qwen3.5 必须选择 models/LLM 中配套的 mmproj GGUF 文件")
+        model_path = resolve_local_qwen_file(config.get("model", ""))
+        mmproj_path = resolve_local_qwen_file(config.get("mmproj", ""))
+        if "mmproj" in os.path.basename(model_path).casefold():
+            raise ValueError("Qwen 主模型不能选择 mmproj 文件")
+        if "mmproj" not in os.path.basename(mmproj_path).casefold():
+            raise ValueError("Qwen mmproj 必须选择文件名包含 mmproj 的 GGUF 文件")
+        if os.path.dirname(model_path) != os.path.dirname(mmproj_path):
+            raise ValueError("Qwen 主模型与 mmproj 必须位于同一模型目录")
         return model_path, mmproj_path
 
     def complete(self, config, system, user, seed=0, image_paths=(), **params):

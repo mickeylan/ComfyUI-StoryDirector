@@ -15,7 +15,7 @@ import numpy as np
 import torch
 from PIL import Image, ImageOps
 
-from .llama_backend import LLAMA
+from .llama_backend import LLAMA, local_qwen_files
 from .presets.script import SEGMENT_COUNT_OPTIONS, build_director_prompt, _resolve_segment_count
 from .sheding.story_styles import STORY_STYLES
 from .skills import (SKILL_IDS, SKILL_OPTIONS_ZH, build_auto_skill_prompt, build_skill_system_prompt,
@@ -300,15 +300,9 @@ def compile_fallback(story, state):
 class StoryDirector:
     @classmethod
     def INPUT_TYPES(cls):
-        try:
-            import folder_paths
-            files = [name for name in folder_paths.get_filename_list("LLM") if name.lower().endswith(".gguf")]
-            supported = [name for name in files if any(marker in name.lower() for marker in ("qwen3.5", "qwen35", "qwen3.8", "qwen38"))]
-            models = [name for name in supported if "mmproj" not in os.path.basename(name).lower()] or ["未选择 Qwen GGUF"]
-            mmproj_models = [name for name in supported if "mmproj" in os.path.basename(name).lower()] or ["未选择 Qwen mmproj"]
-        except (ImportError, KeyError):
-            models = ["未选择 Qwen GGUF"]
-            mmproj_models = ["未选择 Qwen mmproj"]
+        files = local_qwen_files()
+        models = [name for name in files if "mmproj" not in os.path.basename(name).casefold()] or ["未选择 Qwen GGUF"]
+        mmproj_models = [name for name in files if "mmproj" in os.path.basename(name).casefold()] or ["未选择 Qwen mmproj"]
         return {"required": {
             "story": ("STRING", {"default": "", "multiline": True}),
             "prompt_override": ("STRING", {"default": "", "multiline": True}),

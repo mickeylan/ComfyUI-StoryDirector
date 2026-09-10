@@ -2,6 +2,7 @@ import importlib.util
 import json
 import pathlib
 import sys
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -17,6 +18,7 @@ class BackendDispatchTests(unittest.TestCase):
         self.assertEqual(BACKEND._qwen_family("Huihui-Qwen3.8-27B.gguf"), "qwen3.8")
         self.assertEqual(BACKEND._qwen_family("Huihui_Qwen3_8-27B.gguf"), "qwen3.8")
         self.assertEqual(BACKEND._qwen_family("Huihui-Qwen3.5-9B.gguf"), "qwen3.5")
+        self.assertEqual(BACKEND._qwen_family("LLM/GGUF/Qwen3.8/model.gguf"), "qwen3.8")
 
     def test_qwen35_dispatch_is_unchanged(self):
         backend = BACKEND.LocalLlama()
@@ -71,6 +73,30 @@ class BackendDispatchTests(unittest.TestCase):
         with mock.patch.object(backend, "_paths", return_value=("Qwen3.8.gguf", "mmproj-Qwen3.5.gguf")):
             with self.assertRaisesRegex(ValueError, "型号不匹配"):
                 backend.complete({}, "system", "user")
+
+    def test_direct_scan_finds_nested_qwen38_without_llm_registration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            model_dir = root / "LLM" / "GGUF" / "Qwen3.8"
+            model_dir.mkdir(parents=True)
+            (model_dir / "Qwen3.8-27B-UD-IQ2.gguf").touch()
+            (model_dir / "mmproj-Qwen3.8-BF16.gguf").touch()
+            folder_paths = types.ModuleType("folder_paths")
+            folder_paths.models_dir = directory
+            with mock.patch.dict(sys.modules, {"folder_paths": folder_paths}):
+                files = BACKEND.local_qwen_files()
+        self.assertEqual(files, [
+            "LLM/GGUF/Qwen3.8/mmproj-Qwen3.8-BF16.gguf",
+            "LLM/GGUF/Qwen3.8/Qwen3.8-27B-UD-IQ2.gguf",
+        ])
+
+    def test_path_resolution_rejects_outside_models(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder_paths = types.ModuleType("folder_paths")
+            folder_paths.models_dir = directory
+            with mock.patch.dict(sys.modules, {"folder_paths": folder_paths}):
+                with self.assertRaisesRegex(ValueError, "相对路径"):
+                    BACKEND.resolve_local_qwen_file("../outside.gguf")
 
 
 if __name__ == "__main__":
