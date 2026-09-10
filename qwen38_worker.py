@@ -1,7 +1,6 @@
 """Disposable Qwen3.8 vision worker used by StoryDirector."""
 
 import base64
-import ctypes
 import io
 import json
 import os
@@ -19,24 +18,12 @@ _DLL_DIRECTORY_HANDLES = []
 def prepare_windows_llama_dlls():
     if sys.platform != "win32":
         return
-    dll_names = (
-        "cudart64_13.dll", "cublasLt64_13.dll", "cublas64_13.dll",
-        "cudart64_12.dll", "cublasLt64_12.dll", "cublas64_12.dll",
-        "ggml-base.dll", "ggml.dll", "ggml-cpu.dll", "ggml-cuda.dll",
-    )
     for entry in sys.path:
         lib_dir = Path(entry) / "llama_cpp" / "lib"
         if not (lib_dir / "ggml-base.dll").is_file():
             continue
         _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(str(lib_dir)))
-        loaded = []
-        for name in dll_names:
-            path = lib_dir / name
-            if path.is_file():
-                ctypes.WinDLL(str(path))
-                loaded.append(name)
-        print(f"[StoryDirector] llama.cpp DLL directory: {lib_dir}", flush=True)
-        print(f"[StoryDirector] preloaded DLLs: {', '.join(loaded)}", flush=True)
+        print(f"[StoryDirector] registered llama.cpp DLL directory: {lib_dir}", flush=True)
         return
     print("[StoryDirector] WARNING: llama_cpp/lib with ggml-base.dll was not found on sys.path", flush=True)
 
