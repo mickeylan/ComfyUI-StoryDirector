@@ -1,17 +1,51 @@
 """Disposable Qwen3.5 MTMD worker used by StoryDirector."""
 
 import base64
+import ctypes
 import io
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
 from PIL import Image
 
-from llama_runtime import llama_system_info, prepare_windows_llama_dlls
-
 RESULT_PREFIX = "STORYDIRECTOR_RESULT="
+_DLL_DIRECTORY_HANDLES = []
+
+
+def prepare_windows_llama_dlls():
+    if sys.platform != "win32":
+        return
+    dll_names = (
+        "cudart64_13.dll", "cublasLt64_13.dll", "cublas64_13.dll",
+        "cudart64_12.dll", "cublasLt64_12.dll", "cublas64_12.dll",
+        "ggml-base.dll", "ggml.dll", "ggml-cpu.dll", "ggml-cuda.dll",
+    )
+    for entry in sys.path:
+        lib_dir = Path(entry) / "llama_cpp" / "lib"
+        if not (lib_dir / "ggml-base.dll").is_file():
+            continue
+        _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(str(lib_dir)))
+        loaded = []
+        for name in dll_names:
+            path = lib_dir / name
+            if path.is_file():
+                ctypes.WinDLL(str(path))
+                loaded.append(name)
+        print(f"[StoryDirector] llama.cpp DLL directory: {lib_dir}", flush=True)
+        print(f"[StoryDirector] preloaded DLLs: {', '.join(loaded)}", flush=True)
+        return
+    print("[StoryDirector] WARNING: llama_cpp/lib with ggml-base.dll was not found on sys.path", flush=True)
+
+
+def llama_system_info(llama_cpp_module):
+    try:
+        value = llama_cpp_module.llama_cpp.llama_print_system_info()
+        return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
+    except Exception as error:
+        return f"unavailable: {error}"
 
 
 def director_issues(text, expected_count, auto_skill=False, skill_id="", user_story=""):
