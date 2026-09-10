@@ -9,6 +9,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from llama_runtime import llama_system_info, prepare_windows_llama_dlls
+
 RESULT_PREFIX = "STORYDIRECTOR_RESULT="
 
 
@@ -57,13 +59,18 @@ def image_data_url(path):
 
 
 def complete(request):
+    prepare_windows_llama_dlls()
+    import llama_cpp
     from llama_cpp import Llama
     from llama_cpp.llama_chat_format import MTMDChatHandler
 
+    n_gpu_layers = int(request.get("n_gpu_layers", -1))
+    print(f"[StoryDirector] llama.cpp system info: {llama_system_info(llama_cpp)}", flush=True)
+    print(f"[StoryDirector] Qwen3.5 runtime: n_gpu_layers={n_gpu_layers} n_ctx={int(request.get('n_ctx', 65536))}", flush=True)
     handler = MTMDChatHandler(clip_model_path=request["mmproj_path"], verbose=False, use_gpu=True)
     llm = Llama(
         model_path=request["model_path"], chat_handler=handler,
-        n_gpu_layers=int(request.get("n_gpu_layers", -1)),
+        n_gpu_layers=n_gpu_layers,
         n_ctx=int(request.get("n_ctx", 65536)), n_batch=64, n_ubatch=64,
         flash_attn=True, type_k=8, type_v=8, swa_full=False, verbose=False,
     )

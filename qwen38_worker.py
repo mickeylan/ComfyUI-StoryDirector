@@ -11,6 +11,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from llama_runtime import llama_system_info, prepare_windows_llama_dlls
+
 RESULT_PREFIX = "STORYDIRECTOR_RESULT="
 
 
@@ -164,7 +166,9 @@ def adapt_mtmd_template(chat_template):
 
 
 def complete(request):
+    prepare_windows_llama_dlls()
     try:
+        import llama_cpp
         from llama_cpp import Llama, SpecConfig, SpeculativeType
         from llama_cpp.llama_chat_format import Qwen35ChatHandler
     except ImportError as error:
@@ -184,6 +188,13 @@ def complete(request):
                     "n_ctx": int(request.get("n_ctx", 32768)),
                     "n_batch": 256, "n_ubatch": 256, "flash_attn": True, "type_k": 8,
                     "type_v": 8, "swa_full": False, "verbose": False}
+    print(f"[StoryDirector] llama.cpp system info: {llama_system_info(llama_cpp)}", flush=True)
+    print(
+        f"[StoryDirector] Qwen3.8 runtime: n_gpu_layers={llama_kwargs['n_gpu_layers']} "
+        f"n_ctx={llama_kwargs['n_ctx']} cpu_moe={bool(request.get('cpu_moe', False))} "
+        f"n_cpu_moe={n_cpu_moe} mtp={bool(request.get('mtp', True))}",
+        flush=True,
+    )
     if request.get("cpu_moe", False):
         llama_kwargs["cpu_moe"] = True
     elif n_cpu_moe > 0:
