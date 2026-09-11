@@ -30,7 +30,9 @@ def output_issues(text, mode, duration, asset_counts=None):
     if any(pattern.search(value) for pattern in INTERACTIVE_PATTERNS):
         issues.append("移除提问、确认、审批和下一步请求")
     fields = REF_FIELDS if str(mode).casefold() == "ref2va" else BASE_FIELDS
-    positions = [value.find(field) for field in fields]
+    headings = [match.group(1).casefold() + ":" for match in
+                re.finditer(r"(?im)^\s*([a-z_]+)\s*:", value)]
+    positions = [headings.index(field) if field in headings else -1 for field in fields]
     missing = [field for field, position in zip(fields, positions) if position < 0]
     if missing:
         issues.append("缺少必填字段：" + ", ".join(missing))

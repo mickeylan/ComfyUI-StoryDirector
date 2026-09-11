@@ -53,6 +53,20 @@ class SkillIntegrationTests(unittest.TestCase):
         repair = build_repair_prompt(issues)
         self.assertIn("返回完整 Director JSON", repair)
 
+    def test_field_names_inside_values_do_not_change_heading_order(self):
+        plan = {
+            "global_prompt": (
+                "subject_definitions:\nThe narrator literally mentions overall_soundscape: while defining the scene.\n\n"
+                "summary:\nThe summary mentions retention_analysis: as ordinary prose.\n\n"
+                "retention_analysis:\nKeep the subject consistent."
+            ),
+            "overall_soundscape": "A voice says detailed_description: before the wind rises.",
+            "non_diegetic_music": "N/A",
+            "segments": [{"prompt": "The sign reads subject_definitions: as the camera moves."}],
+        }
+        text = compile(plan, "ref2va", 8)
+        self.assertNotIn("H3 字段顺序错误", output_issues(text, "ref2va", 8))
+
 
 if __name__ == "__main__":
     unittest.main()
