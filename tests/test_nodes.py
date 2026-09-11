@@ -130,6 +130,16 @@ class StoryDirectorTests(unittest.TestCase):
         self.assertEqual(NODES._resolve_segment_count("2"), 2)
         self.assertEqual(NODES._resolve_segment_count(37), 37)
 
+    def test_output_language_instruction_is_explicit_for_both_choices(self):
+        chinese = NODES._output_language_instruction("zh")
+        self.assertIn("必须使用简体中文", chinese)
+        self.assertIn("每个 segments[].prompt", chinese)
+        self.assertIn("对白原文", chinese)
+        english = NODES._output_language_instruction("en")
+        self.assertIn("in English", english)
+        self.assertIn("every segments[].prompt", english)
+        self.assertIn("quoted dialogue", english)
+
     def test_segment_duration_is_not_limited_to_15_seconds(self):
         schema = NODES.StoryDirector.INPUT_TYPES()
         duration = schema["required"]["segment_duration"][1]

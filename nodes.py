@@ -297,6 +297,22 @@ def compile_fallback(story, state):
             "segments": [{"prompt": part} for part in parts[:count]]}
 
 
+def _output_language_instruction(language):
+    if language == "zh":
+        return (
+            "## 输出语言（最高优先级）\n"
+            "JSON 中 global_prompt、overall_soundscape、non_diegetic_music 以及每个 segments[].prompt "
+            "必须使用简体中文。仅 H3 固定字段名、JSON 键、<Picture N>/<Video N>/<Audio N>/<Subject N> 标签、"
+            "[Shot N] 标记和对白原文保持协议规定的形式；不得因为系统示例、Skill 文档或素材描述使用英文而改用英文写提示词。"
+        )
+    return (
+        "## Output language (highest priority)\n"
+        "Write global_prompt, overall_soundscape, non_diegetic_music, and every segments[].prompt in English. "
+        "Keep only H3 field names, JSON keys, reference tags, [Shot N] markers, and quoted dialogue in their required protocol/original form. "
+        "Do not switch to Chinese because the story, UI labels, skill documentation, or asset descriptions are Chinese."
+    )
+
+
 class StoryDirector:
     @classmethod
     def INPUT_TYPES(cls):
@@ -366,7 +382,15 @@ class StoryDirector:
                                        active_assets, preference, custom_rules)
         system += "\n\n## 本次导演 Skill\n" + (build_auto_skill_prompt(language) if selected_skill == "auto"
                                                         else build_skill_system_prompt(selected_skill, language))
-        user = f"输出恰好 {count} 个分镜的 Director JSON。" + ("镜头细节必须充分。" if enhance else "")
+        system += "\n\n" + _output_language_instruction(language)
+        if language == "zh":
+            user = f"输出恰好 {count} 个分镜的 Director JSON。所有提示词正文必须使用简体中文。"
+            if enhance:
+                user += "镜头细节必须充分。"
+        else:
+            user = f"Return Director JSON with exactly {count} segments. Write all prompt prose in English."
+            if enhance:
+                user += " Include substantial shot, action, and camera detail."
         config = {"model": llm_model, "mmproj": llm_mmproj, "n_ctx": context_size, "n_gpu_layers": gpu_layers,
                   "expected_count": count, "auto_skill": selected_skill == "auto", "selected_skill": selected_skill,
                   "user_story": story, "enhance": enhance, "qwen38": state.get("qwen38", {})}
