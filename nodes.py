@@ -257,14 +257,18 @@ def validate_director_plan(value, expected_count=None):
     return plan
 
 
-def apply_reference_contract(plan, assets):
+def apply_reference_contract(plan, assets, language="en"):
     images = [asset for asset in assets if asset.get("enabled", True) and asset["type"] == "image"]
     definitions, retention = [], []
     for index, asset in enumerate(images, 1):
         name = asset.get("reference_name") or asset.get("name") or f"Picture {index}"
         description = str(asset.get("description") or "").strip()
-        definitions.append(f"<Subject {index}> is {name} shown in <Picture {index}>" + (f" ({description})." if description else "."))
-        retention.append(f"<Picture {index}> must preserve <Subject {index}>'s identity and visible appearance across every shot.")
+        if language == "zh":
+            definitions.append(f"<Subject {index}> 是 <Picture {index}> 中的{name}" + (f"（{description}）。" if description else "。"))
+            retention.append(f"<Picture {index}> 必须在每个分镜中保持 <Subject {index}> 的身份与可见外观一致。")
+        else:
+            definitions.append(f"<Subject {index}> is {name} shown in <Picture {index}>" + (f" ({description})." if description else "."))
+            retention.append(f"<Picture {index}> must preserve <Subject {index}>'s identity and visible appearance across every shot.")
     global_prompt = plan["global_prompt"].strip()
     if definitions and not re.search(r"(?im)^\s*subject_definitions\s*:", global_prompt):
         global_prompt = "subject_definitions:\n" + "\n".join(definitions) + "\n\n" + global_prompt
@@ -362,13 +366,15 @@ class StoryDirector:
         selected_skill, selection_reason = select_skill(director_skill, story, active_assets)
         reference_images = load_reference_images(active_assets)
         if str(prompt_override or "").strip():
-            plan = apply_reference_contract(validate_director_plan(prompt_override, count), active_assets)
+            plan = apply_reference_contract(validate_director_plan(prompt_override, count), active_assets,
+                                            "zh" if "ZH" in prompt_lang else "en")
             timeline_data = json.dumps(build_timeline_data(plan, segment_duration, selected_skill=selected_skill,
                                                            selection_reason=selection_reason), ensure_ascii=False, indent=2)
             _save_last_processed_script(plan["global_prompt"], timeline_data, state)
             return plan["global_prompt"], timeline_data, catalog, reference_images
         if mode == "离线预览":
-            plan = apply_reference_contract(validate_director_plan(compile_fallback(story, state), count), active_assets)
+            plan = apply_reference_contract(validate_director_plan(compile_fallback(story, state), count), active_assets,
+                                            "zh" if "ZH" in prompt_lang else "en")
             timeline_data = json.dumps(build_timeline_data(plan, segment_duration, selected_skill=selected_skill,
                                                            selection_reason=selection_reason), ensure_ascii=False, indent=2)
             _save_last_processed_script(plan["global_prompt"], timeline_data, state)
@@ -393,7 +399,8 @@ class StoryDirector:
                 user += " Include substantial shot, action, and camera detail."
         config = {"model": llm_model, "mmproj": llm_mmproj, "n_ctx": context_size, "n_gpu_layers": gpu_layers,
                   "expected_count": count, "auto_skill": selected_skill == "auto", "selected_skill": selected_skill,
-                  "user_story": story, "enhance": enhance, "qwen38": state.get("qwen38", {})}
+                  "user_story": story, "output_language": language, "enhance": enhance,
+                  "qwen38": state.get("qwen38", {})}
         params = {"max_tokens": max_tokens, "temperature": temperature, "top_k": top_k, "top_p": top_p,
                   "min_p": min_p, "repeat_penalty": repeat_penalty}
         print(f"[StoryDirector] 准备生成 Director 总提示词和 {count} 个分镜，模式={mode}，风格={story_style}，引用素材={len(active_assets)}", flush=True)
@@ -405,7 +412,7 @@ class StoryDirector:
         except (ImportError, KeyError):
             image_paths = []
         result = LLAMA.complete(config, system, user, seed=seed, image_paths=image_paths, **params)
-        plan = apply_reference_contract(validate_director_plan(result, count), active_assets)
+        plan = apply_reference_contract(validate_director_plan(result, count), active_assets, language)
         if selected_skill == "auto":
             selected_skill = parse_skill_selection(plan.get("selected_skill", ""))
             selection_reason = plan.get("skill_selection_reason") or "本地 Qwen 自动选择"

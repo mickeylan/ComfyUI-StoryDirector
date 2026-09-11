@@ -97,6 +97,7 @@ class LocalLlama:
             "auto_skill": bool(config.get("auto_skill", False)),
             "selected_skill": str(config.get("selected_skill", "")),
             "user_story": str(config.get("user_story", "")),
+            "output_language": str(config.get("output_language", "en")),
             "enhance": bool(config.get("enhance", False)),
             "image_paths": list(image_paths),
             "params": options,

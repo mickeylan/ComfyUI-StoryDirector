@@ -35,13 +35,45 @@ def llama_system_info(llama_cpp_module):
         return f"unavailable: {error}"
 
 
-def director_issues(text, expected_count, auto_skill=False, skill_id="", user_story=""):
+def language_issue(value, output_language):
+    cleaned = re.sub(r"<d>.*?</d>|<[^>]+>|\[Shot[^]]*]", "", str(value or ""), flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r"\b(?:subject_definitions|summary|retention_analysis|detailed_description|overall_soundscape|non_diegetic_music)\s*:", "", cleaned, flags=re.IGNORECASE)
+    han = len(re.findall(r"[\u4e00-\u9fff]", cleaned))
+    latin = len(re.findall(r"\b[A-Za-z]{2,}\b", cleaned))
+    if output_language == "zh" and (han < 4 or latin > han):
+        return "必须使用简体中文"
+    if output_language == "en" and han > max(4, latin):
+        return "must be written in English"
+    return ""
+
+
+def extract_json(text):
+    value = str(text or "")
+    start = value.find("{")
+    if start < 0:
+        return None
     try:
-        value = json.loads(str(text or "").strip())
-    except (TypeError, json.JSONDecodeError):
-        return ["返回内容不是有效 JSON 对象"]
-    if not isinstance(value, dict):
-        return ["返回内容不是 JSON 对象"]
+        parsed, _end = json.JSONDecoder().raw_decode(value[start:])
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def executable_plan(text, expected_count):
+    value = extract_json(text)
+    if value is None:
+        return False
+    segments = value.get("segments") if isinstance(value, dict) else None
+    return (bool(str(value.get("global_prompt") or "").strip())
+            and bool(str(value.get("overall_soundscape") or "").strip())
+            and isinstance(segments, list) and len(segments) == int(expected_count)
+            and all(isinstance(item, dict) and str(item.get("prompt") or "").strip() for item in segments))
+
+
+def director_issues(text, expected_count, auto_skill=False, skill_id="", user_story="", output_language="en"):
+    value = extract_json(text)
+    if value is None:
+        return ["返回内容不包含有效 JSON 对象"]
     issues = [f"缺少 {field}" for field in ("global_prompt", "overall_soundscape") if not str(value.get(field) or "").strip()]
     if auto_skill and not str(value.get("selected_skill") or "").strip():
         issues.append("缺少 selected_skill")
@@ -106,25 +138,35 @@ def complete(request):
         message = response["choices"][0]["message"]
         text = str(message.get("content") or message.get("reasoning_content") or "")
         issues = director_issues(text, request.get("expected_count", 1), request.get("auto_skill", False),
-                                 request.get("selected_skill", ""), request.get("user_story", ""))
+                                 request.get("selected_skill", ""), request.get("user_story", ""),
+                                 request.get("output_language", "en"))
         if issues:
+            original_text, original_issues = text, issues
+            original_executable = executable_plan(text, request.get("expected_count", 1))
             repair = "只修复以下问题并返回完整 JSON，不要解释：\n" + "\n".join(f"- {issue}" for issue in issues)
+            if request.get("enhance"):
+                repair += "\n同时保持每段 prompt 的构图、主体位置、环境光线、连续动作、状态变化、运镜类型/幅度/速度及当前声音足够详细。"
+            llm.reset()
             response = llm.create_chat_completion(
-                messages=messages + [{"role": "assistant", "content": text}, {"role": "user", "content": repair}],
+                messages=[{"role": "system", "content": request["system"]},
+                          {"role": "user", "content": "请按以下要求修复这份 Director JSON。\n" + repair + "\n\n原 JSON：\n" + text}],
                 seed=int(request.get("seed", 0)), reasoning_budget=0, **request.get("params", {}),
             )
             message = response["choices"][0]["message"]
             text = str(message.get("content") or message.get("reasoning_content") or "")
-        if request.get("enhance"):
-            enhance_prompt = ("保持所有 JSON 字段、分镜数量、事实、素材标签、对白和歌词不变，只增强每段 prompt 的构图、主体位置、"
-                              "环境光线、连续动作、状态变化、运镜类型/幅度/速度及当前声音。返回完整 JSON，不要解释。")
-            response = llm.create_chat_completion(
-                messages=messages + [{"role": "assistant", "content": text}, {"role": "user", "content": enhance_prompt}],
-                seed=int(request.get("seed", 0)), reasoning_budget=0, **request.get("params", {}),
-            )
-            message = response["choices"][0]["message"]
-            text = str(message.get("content") or message.get("reasoning_content") or "")
-        return text
+            issues = director_issues(text, request.get("expected_count", 1), request.get("auto_skill", False),
+                                     request.get("selected_skill", ""), request.get("user_story", ""),
+                                     request.get("output_language", "en"))
+            if not executable_plan(text, request.get("expected_count", 1)):
+                if original_executable:
+                    text, issues = original_text, original_issues
+                    print("[StoryDirector] WARNING: Qwen3.5 纠正结果无效，保留首次结构完整的生成结果。", flush=True)
+                else:
+                    raise ValueError("Qwen3.5 首次及修复结果均缺少可执行 JSON 结构")
+            elif issues:
+                print("[StoryDirector] WARNING: Qwen3.5 纠正后仍有非结构问题，保留可执行生成结果。", flush=True)
+        value = extract_json(text)
+        return json.dumps(value, ensure_ascii=False) if value is not None else text
     finally:
         llm.close()
         close_handler = getattr(handler, "close", None)
